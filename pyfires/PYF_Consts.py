@@ -34,7 +34,7 @@ plat_shortnames = {'Himawari-8': 'HIMA',
 
 # These are the radiance-to-temperature conversion coefficients for the FRP calculation.
 # See: doi:10.1016/S0034-4257(03)00070-1 for more info
-# The utility function `compute_aval` in PYF_Sat_Preproc can be used to compute the value of 'a'.
+# The utility function `compute_aval` in PYF_Rad2TbFuncs can be used to compute the value of 'a'.
 rad_to_bt_dict = {
     'Himawari-8': 2.91848e-07,
     'Himawari-9': 2.33101e-07,
@@ -56,9 +56,9 @@ sigma = 5.670373e-8
 
 # *** Stage 1 ***
 # Values used in stage 1a tests
-swir_thresh_bt = 310.5
-swir_thresh_sza_adj = -0.3
-swir_thresh_limit = 280
+mir_thresh_bt = 310.5
+mir_thresh_sza_adj = -0.3
+mir_thresh_limit = 280
 btd_thresh_bt = 1.75
 btd_thresh_sza_adj = -0.0049
 stage1_pass_thresh = 4
@@ -83,27 +83,27 @@ glint_vis_thresh_clr = 0.4
 # For contextual tests
 # Fraction of valid pixels in window required for continuation of processing
 win_frac = 0.65
-swir_cand_minbt_thresh = 270
-swir_cand_maxbt_thresh = 330
-swir_cand_maxbtd_thresh = 8
+mir_cand_minbt_thresh = 270
+mir_cand_maxbt_thresh = 330
+mir_cand_maxbtd_thresh = 8
 
 # Dictionary holding threshold values for the stage 6 / post-processing filters.
 ppf_thresh_dict = {
-    'ppf1_swir_lwir_bt': 5,
-    'ppf1_swir_vis_rad': 0.87,
+    'ppf1_mir_lwir_bt': 5,
+    'ppf1_mir_vis_rad': 0.87,
     'ppf1_firconf': 0.2,
     'ppf1_max_sza': 70,
     'ppf2_vi2_rad': 0.04,
-    'ppf2_swir_lwir_bt': 3,
+    'ppf2_mir_lwir_bt': 3,
     'ppf2_firconf': 0.2,
     'ppf2_min_sza': 90,
-    'ppf3_swir_lwir_bt': 5,
-    'ppf3_swir_vis_rad': 1.,
+    'ppf3_mir_lwir_bt': 5,
+    'ppf3_mir_vis_rad': 1.,
     'ppf3_firconf': 0.1,
     'ppf3_min_sza': 65,
     'ppf3_max_sza': 90,
-    'ppf4_swir_lwir_bt': 5,
-    'ppf4_swir_vis_rad': 0.75,
+    'ppf4_mir_lwir_bt': 5,
+    'ppf4_mir_vis_rad': 0.75,
     'ppf4_min_sza': 65,
     'ppf4_max_sza': 90
 }
