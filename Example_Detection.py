@@ -19,14 +19,12 @@
 
 """An example script showing how to detect fires using pyfires and Himawari/AHI data."""
 
-from dask.diagnostics import Profiler, ResourceProfiler, visualize
-
 import dask
 
 dask.config.set(num_workers=8)
 
 import satpy
-satpy.config.set({'cache_dir': "D:/sat_data/cache/"})
+satpy.config.set({'cache_dir': "/data/cache/"})
 satpy.config.set({'cache_sensor_angles': False})
 satpy.config.set({'cache_lonlats': True})
 
@@ -131,8 +129,8 @@ def main(curfile, out_dir):
 if __name__ == "__main__":
     # Specify the input and output directories for processing.
     # The input directory should contain all the AHI files without subdirectories.
-    indir = 'D:/sat_data/ahi_main/in/'
-    odir = 'D:/sat_data/ahi_main/out/'
+    indir = '/data/ahi_in/'
+    odir = '/data/ahi_out/'
 
     curfiles = glob(f'{indir}/*/*B07*S01*.DAT', recursive=True)
 
