@@ -1,0 +1,8 @@
+pyfires~=0.1.0
+numpy~=1.24.4
+satpy>=0.40
+pyspectral>=0.10
+dask~=2023.10.0
+setuptools~=68.2.2
+cython~=3.0.4
+tqdm~=4.66.1

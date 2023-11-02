@@ -20,9 +20,11 @@
 """Functions for detecting fires in satellite data."""
 
 import pyfires.PYF_Consts as PYFc
+from pyfires.PYF_WindowStats import get_mea_std_window
 from dask_image.ndfilters import convolve
 import dask.array as da
 import numpy as np
+import dask
 
 
 def _make_kern(ksize):
@@ -121,7 +123,6 @@ def do_apply_stg1b_kern2(in_variable, ksize):
 
 
 def stage1_tests(inscn,
-              #   in_mir, in_btd, in_vid, in_sza, in_lsm,
                  ksizes=[3, 5, 7],
                  kern_thresh_btd=PYFc.kern_thresh_btd,
                  kern_thresh_sza_adj=PYFc.kern_thresh_sza_adj,
@@ -256,4 +257,3 @@ def run_basic_night_detection(inscn,
     out_dets = np.where(inscn['SZA'] > opts['sza_thresh'], out_dets, 0)
 
     return out_dets
-

@@ -1,0 +1,40 @@
+[build-system]
+requires = [
+    "setuptools>=42",
+    "wheel",
+    "Cython"
+]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "pyfires"
+version = "0.1.0"
+description = "An algorithm to detect fires in satellite imagery."
+readme = "README.md"
+authors = [{ name = "Simon R Proud", email = "simon.proud@stfc.ac.uk" }]
+license = { text = "GPLv3" }
+classifiers = [
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+]
+keywords = ["satellite", "fires", "remote-sensing", "earth-observation"]
+dependencies = [
+    "numpy>=1.21.2",
+    "scipy>=1.7.1",
+    "pandas>=1.3.4",
+    "dask>=2021.10.0",
+    "pyorbital>=1.7.1",
+    "pyresample>=1.22.1",
+    "satpy>=0.30",
+    "click>=8.0.3",
+    "numba>=0.55.0",
+    "xarray>=0.20.2",
+    "cython~=3.0.0"
+]
+requires-python = ">=3.9"
+
+
+[project.urls]
+Homepage = "https://github.com/simonrp84/PyFires"

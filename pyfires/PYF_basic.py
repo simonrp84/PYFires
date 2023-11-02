@@ -19,18 +19,14 @@
 
 """Basic reading functions for data preparation."""
 
+from satpy.modifiers.angles import get_satellite_zenith_angle
 from dask_image.ndfilters import convolve
 import pyfires.PYF_Consts as PYFc
 from satpy import Scene
-import dask.array as da
-from glob import glob
 
 from pyspectral.rsr_reader import RelativeSpectralResponse
+from satpy.modifiers.angles import _get_sun_angles
 import numpy as np
-
-import warnings
-warnings.filterwarnings('ignore')
-
 
 def conv_kernel(indata, ksize=5):
     """Convolve a kernel with a dataset."""
@@ -129,15 +125,39 @@ def convert_radiance(the_scn, blist):
     return the_scn
 
 
+def _get_band_solar(the_scn, bdict):
+    """Compute the per-band solar irradiance for each loaded channel.
+    Inputs:
+    - the_scn: A satpy Scene whose bands to compute the irradiance for.
+    - bdict: A dict of the band names and output names to compute the irradiance for.
+    Returns:
+    - irrad_dict: A dictionary containing the irradiance for each band.
+
+    """
+    from pyspectral.solar import SolarIrradianceSpectrum as SIS
+    from pyspectral.rsr_reader import RelativeSpectralResponse
+
+    irrad_dict = {}
+
+    for band_name in bdict:
+        sensor = the_scn[bdict[band_name]].attrs['sensor']
+        platform = the_scn[bdict[band_name]].attrs['platform_name']
+        srf = RelativeSpectralResponse(platform, sensor)
+        cur_rsr = srf.rsr[bdict[band_name]]
+        irrad = SIS().inband_solarirradiance(cur_rsr)
+        irrad_dict[band_name] = irrad
+
+    return irrad_dict
+
+
 def initial_load(infiles_l1,
                  l1_reader,
                  bdict,
-                 rad_dict,
                  infiles_cld=None,
                  cld_reader=None,
                  cmask_name=None,
                  lw_bt_thresh=0,
-                 sw_bt_thresh=0,
+                 mir_bt_thresh=0,
                  do_load_lsm=True):
     """Read L1 and Cloudmask from disk based on user preferences.
     Inputs:
@@ -149,113 +169,113 @@ def initial_load(infiles_l1,
      - cld_reader: Satpy reader to use for cloudmask files.
      - cmask_name: Name of cloudmask band to read.
      - lw_bt_thresh: Threshold LWIR brightness temperature to use for cloudmasking.
-     - sw_bt_thresh: Threshold SWIR brightness temperature to use for cloudmasking.
+     - mir_bt_thresh: Threshold MIR brightness temperature to use for cloudmasking.
      - do_load_lsm: Boolean, whether to load a land-sea mask (default: True).
     Returns:
      - scn: A satpy Scene containing the data read from disk.
     """
     # Check that user has provided requested info.
-
-    from satpy.modifiers.angles import compute_relative_azimuth, get_angles
-
     blist = []
     for item in bdict:
         blist.append(bdict[item])
 
+
     scn = Scene(infiles_l1, reader=l1_reader)
     scn.load(blist, calibration='radiance', generate=False)
 
-    scn2 = Scene(infiles_l1, reader='ahi_hsd')
-    scn2.load([bdict['lwi_band'], bdict['lw2_band'], bdict['swi_band']], generate=False)
+    scn2 = Scene(infiles_l1, reader=l1_reader)
+    scn2.load([bdict['lwi_band'], bdict['mir_band']], generate=False)
+
+
+    # Compute the solar irradiance values
+    irrad_dict = _get_band_solar(scn, bdict)
 
     scn['VI1_RAD'] = scn[bdict['vi1_band']]
     scn['VI2_RAD'] = scn[bdict['vi2_band']]
-    scn['SWI_RAD'] = scn[bdict['swi_band']]
+    scn['MIR_RAD'] = scn[bdict['mir_band']]
     scn['LW1_RAD'] = scn[bdict['lwi_band']]
-    scn['LW2_RAD'] = scn[bdict['lw2_band']]
-    scn['LW1__BT'] = scn2[bdict['lwi_band']]
-    scn['LW2__BT'] = scn2[bdict['lw2_band']]
-    scn['SWI__BT'] = scn2[bdict['swi_band']]
+    #scn['LW2_RAD'] = scn[bdict['lw2_band']]
+    scn['LW1__BT'] = scn2[bdict['lwi_band']].copy()
+    #scn['LW2__BT'] = scn2[bdict['lw2_band']]
+    scn['MIR__BT'] = scn2[bdict['mir_band']].copy()
 
-    scn['BTD'] = scn['SWI__BT'] - scn['LW1__BT']
-    scn['BTD'].attrs = scn['SWI_RAD'].attrs
+    scn['BTD'] = scn['MIR__BT'] - scn['LW1__BT']
+    scn['BTD'].attrs = scn['MIR_RAD'].attrs
     scn['BTD'].attrs['name'] = 'BTD'
-
-    scn['BTD_LW'] = scn['LW1__BT'] - scn['LW2__BT']
-    scn['BTD_LW'].attrs = scn['LW1__BT'].attrs
-    scn['BTD_LW'].attrs['name'] = 'BTD_LW'
 
     sat = scn['LW1__BT'].attrs['platform_name']
     sen = scn['LW1__BT'].attrs['sensor']
     det = 'det-1'
 
     rsr = RelativeSpectralResponse(sat, sen)
-    cur_rsr = rsr.rsr[bdict['swi_band']]
-    wvl_swi = cur_rsr[det]['central_wavelength']
+    cur_rsr = rsr.rsr[bdict['mir_band']]
+    wvl_mir = cur_rsr[det]['central_wavelength']
 
     scn = scn.resample(scn.coarsest_area(), resampler='native')
 
-    exp_rad = calc_rad_fromtb(scn['LW1__BT'].data, wvl_swi)
-    swi_diffrad = scn['SWI_RAD'].data - exp_rad
-    swi_diffrad = da.where(np.isfinite(swi_diffrad), swi_diffrad, 0)
+    exp_rad = calc_rad_fromtb(scn['LW1__BT'].data, wvl_mir)
+    mir_diffrad = scn['MIR_RAD'].data - exp_rad
+    mir_diffrad = np.where(np.isfinite(mir_diffrad), mir_diffrad, 0)
 
-    swi_noir_name = 'SWI_RAD_NO_IR'
-    scn[swi_noir_name] = scn['SWI_RAD'].copy()
-    scn[swi_noir_name].data = swi_diffrad
-    scn[swi_noir_name].attrs = scn['SWI_RAD'].attrs
-    scn[swi_noir_name].attrs['name'] = swi_noir_name
+    mir_noir_name = 'MIR_RAD_NO_IR'
+    scn[mir_noir_name] = scn['MIR_RAD'].copy()
+    scn[mir_noir_name].data = mir_diffrad
+    scn[mir_noir_name].attrs = scn['MIR_RAD'].attrs
+    scn[mir_noir_name].attrs['name'] = mir_noir_name
 
-    scn['VI1_RAD'].data = scn['VI1_RAD'].data * rad_dict['swi'] / rad_dict['vi1']
-    scn['VI2_RAD'].data = scn['VI2_RAD'].data * rad_dict['swi'] / rad_dict['vi2']
+    scn['VI1_RAD'].data = scn['VI1_RAD'].data * irrad_dict['mir_band'] / irrad_dict['vi1_band']
 
-    scn['VI1_DIFF'] = scn[swi_noir_name] - scn['VI1_RAD']
-    scn['VI1_DIFF'].attrs = scn['SWI_RAD'].attrs
+    scn['VI1_DIFF'] = scn[mir_noir_name] - scn['VI1_RAD']
+    scn['VI1_DIFF'].attrs = scn['MIR_RAD'].attrs
     scn['VI1_DIFF'].attrs['name'] = 'VI1_DIFF'
 
-    scn['VI2_DIFF'] = scn[swi_noir_name] - scn['VI2_RAD']
-    scn['VI2_DIFF'].attrs = scn['SWI_RAD'].attrs
-    scn['VI2_DIFF'].attrs['name'] = 'VI2_DIFF'
+    scn['mi_ndfi'] = scn['MIR_RAD'].copy()
+    scn['mi_ndfi'].attrs['name'] = 'mi_ndfi'
+    scn['mi_ndfi'].data = (scn['MIR__BT'].data - scn['LW1__BT'].data) / (scn['MIR__BT'].data + scn['LW1__BT'].data)
 
-    scn['sw_ndfi'] = scn['SWI_RAD'].copy()
-    scn['sw_ndfi'].attrs['name'] = 'sw_ndfi'
-    scn['sw_ndfi'].data = (scn['SWI__BT'].data - scn['LW1__BT'].data) / (scn['SWI__BT'].data + scn['LW1__BT'].data)
-
-    scn['lw_ndfi'] = scn['SWI_RAD'].copy()
-    scn['lw_ndfi'].attrs['name'] = 'lw_ndfi'
-    scn['lw_ndfi'].data = (scn['LW1__BT'].data - scn['LW2__BT'].data) / (scn['LW2__BT'].data + scn['LW1__BT'].data)
-
-    final_bnames = ['VI1_RAD', 'VI2_RAD', 'SWI_RAD', 'LW1_RAD', 'LW2_RAD',
-                    'SWI__BT', 'LW1__BT', 'LW2__BT',
-                    'SWI_RAD_NO_IR', 'VI1_DIFF', 'VI2_DIFF',
-                    'sw_ndfi',]# 'lw_ndfi']
+    final_bnames = ['VI1_RAD', 'VI2_RAD', 'MIR_RAD', 'LW1_RAD',
+                    'MIR__BT', 'LW1__BT',
+                    'MIR_RAD_NO_IR', 'VI1_DIFF',
+                    'mi_ndfi',]
 
     for band in blist:
         del(scn[band])
 
     for band in final_bnames:
-        scn[band].data = da.where(np.isfinite(scn[band].data), scn[band].data, np.nan)
+        scn[band].data = np.where(np.isfinite(scn[band].data), scn[band].data, np.nan)
 
-        #if lw_bt_thresh > 100:
-        #    scn[band].data = da.where(scn['LW1__BT'].data > lw_bt_thresh, scn[band].data, np.nan)
-        #if sw_bt_thresh > 100:
-        #    scn[band].data = da.where(scn['SWI__BT'].data > sw_bt_thresh, scn[band].data, np.nan)
+        if lw_bt_thresh > 100:
+            scn[band].data = np.where(scn['LW1__BT'].data > lw_bt_thresh, scn[band].data, np.nan)
+        if mir_bt_thresh > 100:
+            scn[band].data = np.where(scn['MIR__BT'].data > mir_bt_thresh, scn[band].data, np.nan)
 
     # Get the angles associated with the Scene
-    vaa, vza, saa, sza = get_angles(scn['LW1__BT'])
 
-    sza.data = da.where(sza.data > 90, 90, sza)
-
-    raa = compute_relative_azimuth(vaa, saa)
-    scn['VZA'] = scn['LW1__BT'].copy()
-    scn['VZA'].data = vza.data
-    scn['VZA'].attrs['name'] = 'VZA'
+    # Solar zenith
+    saa, sza = _get_sun_angles(scn['LW1__BT'])
     scn['SZA'] = scn['LW1__BT'].copy()
     scn['SZA'].data = sza.data
     scn['SZA'].attrs['name'] = 'SZA'
-    scn['RAA'] = scn['LW1__BT'].copy()
-    scn['RAA'].data = raa.data
-    scn['RAA'].attrs['name'] = 'RAA'
 
+    # Satellite zenith
+    scn['VZA'] = scn['LW1__BT'].copy()
+    scn['VZA'].data = get_satellite_zenith_angle(scn['LW1__BT'])
+    scn['VZA'].attrs['name'] = 'VZA'
+
+    # Compute the pixel area
+    scn['pix_area'] = scn['LW1__BT'].copy()
+    scn['pix_area'].attrs['name'] = 'pix_area'
+    pix_area = scn['LW1__BT'].attrs['area'].pixel_size_x * scn['LW1__BT'].attrs['area'].pixel_size_x
+    # Pixel sizes are in meters, convert to km
+    pix_area = pix_area * 1e-6
+
+    # Multiply by inverse vza to gain estimate of pixel size across image.
+    scn['pix_area'] = pix_area / np.cos(np.deg2rad(scn['VZA']))
+
+    # Add an unmodified version of the LWIR band
+    scn['LWIR_BT_RAW'] = scn2[bdict['lwi_band']].copy()
+
+    # Lastly, load the land-sea mask
     if do_load_lsm:
         scn['LSM'] = load_lsm(scn['BTD'])
 
@@ -307,3 +327,65 @@ def load_lsm(ds, xy_bbox=None, ll_bbox=None):
     data.attrs['name'] = 'Land-Sea mask'
 
     return data
+
+
+def comp_stat(x, a, b):
+    """Function for the stage 5 confidence assignment (eqn 8 in Roberts)."""
+    out = (x - a) / (b - a)
+    out = np.where(x < a, 0, out)
+    out = np.where(x > b, 1, out)
+    return out
+
+
+def do_stage5(btd, mea_btd, std_btd, bt_mir, mea_mir, std_mir,
+              sza, nwin, ncld, nwat):
+    """Compute the confidence value for each potential fire pixel.
+    Inputs:
+    - indict: The input data dictionary.
+    Returns:
+    - outarr_conf: An array of identical shape to the input satellite imagery containing confidence values.
+    - outarr_frp: An array of identical shape to the input satellite imagery containing estimated FRP values.
+    """
+
+    outarr_conf = np.zeros_like(btd)
+
+    nig_sza = 60.
+
+    sza_thr = np.where(sza > nig_sza, nig_sza, sza)
+
+    z4 = (bt_mir - mea_mir) / std_mir
+    zdt = (btd - mea_btd) / std_btd
+
+    min_c1_day = 287
+    min_c1_nig = 280
+    max_c1_day = 327
+    max_c1_nig = 310
+
+    min_c2 = 0.9
+    max_c2 = 6.
+
+    min_c3_day = 2
+    min_c3_nig = 1.5
+    max_c3_day = 6
+    max_c3_nig = 5
+
+    c1_grad = (min_c1_nig - min_c1_day) / nig_sza
+    min_c1 = min_c1_day + c1_grad * sza_thr
+    c1_grad = (max_c1_nig - max_c1_day) / nig_sza
+    max_c1 = max_c1_day + c1_grad * sza_thr
+
+    c3_grad = (min_c3_nig - min_c3_day) / nig_sza
+    min_c3 = min_c3_day + c3_grad * sza_thr
+    c3_grad = (max_c3_nig - max_c3_day) / nig_sza
+    max_c3 = max_c3_day + c3_grad * sza_thr
+
+    c1 = comp_stat(bt_mir, min_c1, max_c1)
+    c2 = comp_stat(z4, min_c2, max_c2)
+    c3 = comp_stat(zdt, min_c3, max_c3)
+
+    c4 = 1 - comp_stat(ncld / (nwin / 2.), 0, 1)
+    c5 = 1 - comp_stat(nwat / (nwin / 2.), 0, 1)
+
+    outarr_conf = np.power(c1 * c2 * c3 * c4 * c5, 1./5.)
+
+    return outarr_conf
