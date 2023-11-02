@@ -19,12 +19,14 @@
 
 """An example script showing how to detect fires using pyfires and Himawari/AHI data."""
 
+from dask.diagnostics import Profiler, ResourceProfiler, visualize
+
 import dask
 
 dask.config.set(num_workers=8)
 
 import satpy
-satpy.config.set({'cache_dir': "/data/cache/"})
+satpy.config.set({'cache_dir': "D:/sat_data/cache/"})
 satpy.config.set({'cache_sensor_angles': False})
 satpy.config.set({'cache_lonlats': True})
 
@@ -46,6 +48,11 @@ def main(curfile, out_dir):
 
     pos = curfile.find('B07')
     dtstr = curfile[pos-14:pos-1]
+    if os.path.exists(f'{out_dir}/frp_estimate_{dtstr}00.tif'):
+        print(f'Already processed {dtstr}')
+        return
+    else:
+        print("Processing", f'{out_dir}/frp_estimate_{dtstr}00.tif')
     ifiles_l15 = glob(f'{os.path.dirname(curfile)}/*{dtstr}*.DAT')
 
     # The bands used for processing:
@@ -129,10 +136,12 @@ def main(curfile, out_dir):
 if __name__ == "__main__":
     # Specify the input and output directories for processing.
     # The input directory should contain all the AHI files without subdirectories.
-    indir = '/data/ahi_in/'
-    odir = '/data/ahi_out/'
+    indir = 'D:/sat_data/ahi_main/in/'
+    odir = 'D:/sat_data/ahi_main/out/'
 
     curfiles = glob(f'{indir}/*/*B07*S01*.DAT', recursive=True)
+    curfiles.sort()
 
     for curinf in tqdm(curfiles):
         main(curinf, odir)
+        break

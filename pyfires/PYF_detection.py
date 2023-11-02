@@ -200,6 +200,9 @@ def compute_background_rad(indata,
     hist, bins = np.histogram(tmp, bins=800, range=hist_range)
     hist = hist / np.sum(hist)
 
+    if np.nanmax(hist) <= 0 or np.isnan(np.nanmax(hist)):
+        return -999
+
     # Loop over histogram to find where threshold cumulative count is exceeded
     i = 0
     for i in range(0, len(hist)):
@@ -236,7 +239,13 @@ def run_basic_night_detection(inscn,
     """
 
     # Compute the appropriate VIS radiance threshold
-    thr_vis = compute_background_rad(inscn['VI2_RAD'], inscn['SZA'], sza_thr=opts['sza_thresh'])
+    if np.nanmax(inscn['SZA'] > opts['sza_thresh']):
+        thr_vis = compute_background_rad(inscn['VI2_RAD'], inscn['SZA'], sza_thr=opts['sza_thresh'])
+    else:
+        return np.zeros_like(inscn['VI2_RAD'])
+
+    if thr_vis == -999:
+        return np.zeros_like(inscn['VI2_RAD'])
 
     # Compute the definite night-time detections
     def_dets = np.where(inscn['VI2_RAD'] > opts['def_fire_rad_vis'], 1, 0)
