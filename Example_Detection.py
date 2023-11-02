@@ -91,25 +91,25 @@ def main(curfile, out_dir):
                              255,  # The value denoting land in the LSM. If 255, ignore mask
                              25)
 
-    outan = da.from_delayed(outa, shape=(scn['BTD'].shape[0], scn['BTD'].shape[1], 16), dtype=np.single)
+    outan = da.from_delayed(outa, shape=(16, scn['BTD'].shape[0], scn['BTD'].shape[1]), dtype=np.single)
 
     # Get the results of the windows statistics code
-    perc_good = np.squeeze(outan[:, :, 0])
-    n_winpix = np.squeeze(outan[:, :, 1])
-    n_cloudpix = np.squeeze(outan[:, :, 2])
-    n_waterpix = np.squeeze(outan[:, :, 3])
-    mean_lw = np.squeeze(outan[:, :, 4])
-    std_lw = np.squeeze(outan[:, :, 5])
-    mean_nd = np.squeeze(outan[:, :, 6])
-    std_nd = np.squeeze(outan[:, :, 7])
-    mean_vi = np.squeeze(outan[:, :, 8])
-    std_vi = np.squeeze(outan[:, :, 9])
-    mean_btd = np.squeeze(outan[:, :, 10])
-    std_btd = np.squeeze(outan[:, :, 11])
-    mean_mir = np.squeeze(outan[:, :, 12])
-    std_mir = np.squeeze(outan[:, :, 13])
-    mean_vid = np.squeeze(outan[:, :, 14])
-    std_vid = np.squeeze(outan[:, :, 15])
+    perc_good = outan[0, :, :]
+    n_winpix = outan[1, :, :]
+    n_cloudpix = outan[2, :, :]
+    n_waterpix = outan[3, :, :]
+    mean_lw = outan[4, :, :]
+    std_lw = outan[5, :, :]
+    mean_nd = outan[6, :, :]
+    std_nd = outan[7, :, :]
+    mean_vi = outan[8, :, :]
+    std_vi = outan[9, :, :]
+    mean_btd = outan[10, :, :]
+    std_btd = outan[11, :, :]
+    mean_mir = outan[12, :, :]
+    std_mir = outan[13, :, :]
+    mean_vid = outan[14, :, :]
+    std_vid = outan[15, :, :]
 
     # Apply some additional thresholding to remove false positives due to VIS channel noise
     results = da.where(scn['BTD'].data > mean_btd + 1.5 * std_btd, results, 0)
@@ -120,10 +120,12 @@ def main(curfile, out_dir):
     frp_est = (scn['pix_area'] * PYFc.sigma / a_val) * (scn['MIR__BT'] - mean_mir)
     frp_est = np.where(mean_mir > 0, frp_est, 0)
 
-    frp_est.visualize(filename='C:/Users/Simon/Desktop/transpose.svg')
+    scn['frp_est'] = scn['VI1_DIFF'].copy()
+    scn['frp_est'].attrs['name'] = 'frp_estimate'
+    scn['frp_est'].attrs['units'] = 'MW'
+    scn['frp_est'].data = frp_est
 
-    save_output(scn, frp_est, 'frp_est', out_dir, 'VI1_DIFF')
-    scn.save_dataset('LWIR_BT_RAW', base_dir=out_dir, enhance=False, dtype=np.float32)
+    scn.save_datasets(datasets=['LWIR_BT_RAW', 'frp_est'], base_dir=out_dir, enhance=False, dtype=np.float32)
 
 
 if __name__ == "__main__":
@@ -132,11 +134,7 @@ if __name__ == "__main__":
     indir = 'D:/sat_data/ahi_main/in/'
     odir = 'D:/sat_data/ahi_main/out/'
 
-    curfiles = glob(f'{indir}/1*/*B07*S01*.DAT', recursive=True)
+    curfiles = glob(f'{indir}/*/*B07*S01*.DAT', recursive=True)
 
     for curinf in tqdm(curfiles):
-        with Profiler() as prof, ResourceProfiler(dt=0.25) as rprof:
-            main(curinf, odir)
-        visualize([prof, rprof], show=False, save=True, filename="D:/sat_data/ahi_main/fci-dask-multi-dataset.html")
-
-        break
+        main(curinf, odir)
