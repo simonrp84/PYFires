@@ -21,10 +21,10 @@
 
 import pyfires.PYF_Consts as PYFc
 from pyfires.PYF_WindowStats import get_mea_std_window
-from dask_image.ndfilters import convolve
+from dask_image.ndfilters import convolve, maximum_filter
 import dask.array as da
 import numpy as np
-import dask
+import xarray as xr
 
 
 def _make_kern(ksize):
@@ -99,9 +99,9 @@ def set_initial_thresholds(sza,
 
     """
     mir_thresh = mir_thresh_bt + mir_thresh_sza_adj * sza
-    mir_thresh = np.where(mir_thresh < mir_thresh_limit, mir_thresh_limit, mir_thresh)
+    mir_thresh = xr.where(mir_thresh < mir_thresh_limit, mir_thresh_limit, mir_thresh)
     btd_thresh = btd_thresh_bt + btd_thresh_sza_adj * sza
-    btd_thresh = np.where(btd_thresh < btd_thresh_limit, btd_thresh_limit, btd_thresh)
+    btd_thresh = xr.where(btd_thresh < btd_thresh_limit, btd_thresh_limit, btd_thresh)
 
     return mir_thresh, btd_thresh
 
@@ -122,11 +122,16 @@ def do_apply_stg1b_kern2(in_variable, ksize):
     return out_ker, out_std
 
 
-def stage1_tests(inscn,
+def stage1_tests(in_mir,
+                 in_btd,
+                 in_vid,
+                 in_sza,
+                 in_lsm,
                  ksizes=[3, 5, 7],
                  kern_thresh_btd=PYFc.kern_thresh_btd,
                  kern_thresh_sza_adj=PYFc.kern_thresh_sza_adj,
-                 do_lsm_mask=True):
+                 do_lsm_mask=True,
+                 lsm_land_val=PYFc.lsm_land_val):
     """Perform the stage 1a + 1b tests from Roberts + Wooster.
     Inputs:
     - in_mir: The MIR channel data (K)
@@ -142,32 +147,35 @@ def stage1_tests(inscn,
     - A boolean mask with True for pixels that pass the tests
     """
 
-    btd_kern_thr = kern_thresh_btd + kern_thresh_sza_adj * inscn['SZA']
+    from pyfires.PYF_basic import save_output
 
-    mir_thresh, btd_thresh = set_initial_thresholds(inscn['SZA'])
-    main_testarr = da.zeros_like(inscn['MIR__BT'])
+    btd_kern_thr = kern_thresh_btd + kern_thresh_sza_adj * in_sza
+
+    mir_thresh, btd_thresh = set_initial_thresholds(in_sza)
+    main_testarr = da.zeros_like(in_mir)
 
     # This is stage 1b, applied before 1a to simplify processing.
     for ksize in ksizes:
-        kerval, stdval = do_apply_stg1b_kern2(inscn['BTD'], ksize)
-        tmpdata = np.where(kerval >= stdval * btd_kern_thr, 1, 0)
-        main_testarr = np.where(tmpdata > 0, main_testarr + 1, main_testarr)
+        kerval, stdval = do_apply_stg1b_kern2(in_btd, ksize)
+        tmpdata = xr.where(kerval >= stdval * btd_kern_thr, 1, 0)
+        main_testarr = xr.where(tmpdata > 0, main_testarr + 1, main_testarr)
 
-    main_testarr = np.where(inscn['MIR__BT'] >= mir_thresh, main_testarr + 1, 0)
-    main_testarr = np.where(inscn['BTD'] >= btd_thresh, main_testarr + 1, 0)
+    main_testarr = xr.where(in_mir >= mir_thresh, main_testarr + 1, 0)
+    main_testarr = xr.where(in_btd >= btd_thresh, main_testarr + 1, 0)
 
     # Apply land-sea mask
     if do_lsm_mask:
-        main_testarr = np.where(inscn['LSM'] == 2, main_testarr, 0)
+        main_testarr = xr.where(in_lsm == lsm_land_val, main_testarr, 0)
 
     # Only select pixels with positive MIR radiance after VIS and IR subtractions.
-    main_testarr = np.where(inscn['VI1_DIFF'] >= 0, main_testarr, 0)
+    main_testarr = xr.where(in_vid >= 0, main_testarr, 0)
 
-    # Return only those pixels meeting test threshold.
-    inscn['PFP'] = inscn['LSM'].copy()
-    inscn['PFP'].attrs['name'] = 'PFP'
-    inscn['PFP'].data = np.where(main_testarr >= PYFc.stage1_pass_thresh, 1, 0).astype(np.uint8)
-    return inscn
+    pfp_arr = in_sza.copy()
+    pfp_arr.attrs['name'] = 'potential_fire_pixels'
+    pfp_arr.data = xr.where(main_testarr >= PYFc.stage1_pass_thresh, 1, 0).astype(np.uint8)
+
+    # Return only those pixels meeting test threshold
+    return pfp_arr
 
 
 def compute_background_rad(indata,
@@ -176,7 +184,7 @@ def compute_background_rad(indata,
                            rad_sum_thr=0.99,
                            hist_range=(0, 2)):
     """Compute the threshold background radiance for the VIS channel at night.
-    This is used to detect bright night-time pixels.
+    This is used to detect bright nighttime pixels.
 
     Inputs:
      - indata: The VIS channel radiances
@@ -214,7 +222,10 @@ def compute_background_rad(indata,
     return bins[i]
 
 
-def run_basic_night_detection(inscn,
+def run_basic_night_detection(in_vi2_rad,
+                              in_sza,
+                              in_vid,
+                              in_pfp,
                               opts={'def_fire_rad_vis': 0.5,
                                     'def_fire_rad_vid': 0.5,
                                     'sza_thresh': 97,
@@ -239,30 +250,42 @@ def run_basic_night_detection(inscn,
     """
 
     # Compute the appropriate VIS radiance threshold
-    if np.nanmax(inscn['SZA'] > opts['sza_thresh']):
-        thr_vis = compute_background_rad(inscn['VI2_RAD'], inscn['SZA'], sza_thr=opts['sza_thresh'])
+    if np.nanmax(in_sza > opts['sza_thresh']):
+        thr_vis = compute_background_rad(in_vi2_rad, in_sza, sza_thr=opts['sza_thresh'])
     else:
-        return np.zeros_like(inscn['VI2_RAD'])
+        return np.zeros_like(in_vi2_rad)
 
     if thr_vis == -999:
-        return np.zeros_like(inscn['VI2_RAD'])
+        return np.zeros_like(in_vi2_rad)
 
-    # Compute the definite night-time detections
-    def_dets = np.where(inscn['VI2_RAD'] > opts['def_fire_rad_vis'], 1, 0)
-    def_dets = np.where(inscn['VI1_DIFF'] > opts['def_fire_rad_vid'], def_dets, 0)
-    def_dets = np.where(inscn['SZA'] > opts['sza_thresh'], def_dets, 0)
+    # Compute the definite nighttime detections
+    def_dets = (in_vi2_rad > opts['def_fire_rad_vis']).astype(np.uint8)
+    def_dets.data = xr.where(in_vid > opts['def_fire_rad_vid'], def_dets.data, 0)
+    def_dets.data = xr.where(in_sza > opts['sza_thresh'], def_dets.data, 0)
 
     # Select only pixels with a bright VIS radiance
-    out_dets = np.where(inscn['VI2_RAD'].data > thr_vis * 2, 1, 0)
+    out_dets = (in_vi2_rad > thr_vis * 2).astype(np.uint8)
     # Select only pixels with a suitable VISDIFF radiance
-    out_dets = np.where(inscn['VI1_DIFF'].data > opts['vid_thresh'], out_dets, 0)
+    out_dets.data = xr.where(in_vid > opts['vid_thresh'], out_dets.data, 0)
     # Exclude pixels that were not selected as potential fire pixels by the Roberts + Wooster tests
-    out_dets = np.where(inscn['PFP'] == 1, out_dets, 0)
+    out_dets.data = xr.where(in_pfp == 1, out_dets.data, 0)
+
+    # Sometimes, hot VIS pixels are mistaken as fire. Here we attempt to exclude those pixels
+    # by ensuring that the candidate has the highest VID in a 3x3 window.
+    # Get sum in 3x3 window
+    det_sum = convolve(out_dets.data, np.ones((3, 3)))
+    # Get max in 3x3 window
+    det_max = maximum_filter(in_vid.data, (3, 3))
+
+    det_pos = xr.where(det_sum == 1, in_vid, 0)
+    det_pos = xr.where(det_pos == det_max, 1, 0).astype(np.uint8)
+
+    out_dets = xr.where(det_sum == 1, det_pos, out_dets)
 
     # Apply def dets
-    out_dets = np.where(def_dets > 0, 1, out_dets)
+    out_dets = xr.where(def_dets > 0, 1, out_dets)
 
     # Only select night pixels
-    out_dets = np.where(inscn['SZA'] > opts['sza_thresh'], out_dets, 0)
+    out_dets = xr.where(in_sza > opts['sza_thresh'], out_dets, 0)
 
-    return out_dets
+    return out_dets, def_dets

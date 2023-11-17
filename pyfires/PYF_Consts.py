@@ -54,6 +54,9 @@ rad_to_bt_dict = {
 # Stefan-Boltzmann constant
 sigma = 5.670373e-8
 
+# Land-Sea mask default value for land
+lsm_land_val = 2
+
 # *** Stage 1 ***
 # Values used in stage 1a tests
 mir_thresh_bt = 310.5
@@ -61,11 +64,11 @@ mir_thresh_sza_adj = -0.3
 mir_thresh_limit = 280
 btd_thresh_bt = 1.75
 btd_thresh_sza_adj = -0.0049
+btd_thresh_limit = 1
 stage1_pass_thresh = 4
 
 # Values used in stage 1b tests
-btd_thresh_limit = 1
-kern_thresh_btd = 1.5
+kern_thresh_btd = 2.
 kern_thresh_sza_adj = -0.012
 
 # *** Stage 2 ***

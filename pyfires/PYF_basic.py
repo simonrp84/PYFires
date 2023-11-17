@@ -26,7 +26,31 @@ from satpy import Scene
 
 from pyspectral.rsr_reader import RelativeSpectralResponse
 from satpy.modifiers.angles import _get_sun_angles
+import xarray as xr
 import numpy as np
+
+
+def vid_adjust_sza(in_vid, in_sza, sza_adj=82, min_v=0.04, max_v=0.135, slo_str=1.8, slo_rise=0.2):
+    """Adjust the VI Difference based on solar zenith angle.
+    Inputs:
+    - in_vid: The VI Difference data
+    - in_sza: The solar zenith angle in degrees
+    - sza_adj: The SZA threshold at which adjustment begins. Default value: 82 degrees.
+    - min_v: The minimum VID value, used during day. Default value: 0.04
+    - max_v: The maximum VID value, used at night. Default value: 0.135
+    - slo_str: The slope strength. Default value: 1.8
+    - slo_rise: The slope rise. Default value: 0.2
+    Returns:
+    - adj_vid: The adjusted VI Difference data
+     """
+
+    adj_val = min_v + (max_v - min_v) * (1 / (1 + np.exp(-slo_str * (in_sza - sza_adj))) ** slo_rise)
+
+    adj_vid = in_vid.copy()
+    adj_vid.attrs['name'] = 'VI1_DIFF_ADJ'
+    adj_vid.data = in_vid - adj_val
+    return adj_vid
+
 
 def conv_kernel(indata, ksize=5):
     """Convolve a kernel with a dataset."""
@@ -49,6 +73,17 @@ def calc_rad_fromtb(temp, cwl):
 
     first = c1
     second = np.power(cwl, 5) * (np.exp(c2 / (cwl * temp)) - 1.)
+
+    return first / second
+
+
+def calc_tb_fromrad(rad, cwl):
+    """Inverse version of eqn 2 in Wooster's paper. Compute BT from radiance and central wavelength (micron)."""
+    c1 = 1.1910429e8
+    c2 = 1.4387752e4
+
+    first = c2
+    second = cwl * np.log(c1 / (rad * np.power(cwl, 5)) + 1)
 
     return first / second
 
@@ -125,10 +160,10 @@ def convert_radiance(the_scn, blist):
     return the_scn
 
 
-def _get_band_solar(the_scn, bdict):
+def _get_band_solar(the_dict, bdict):
     """Compute the per-band solar irradiance for each loaded channel.
     Inputs:
-    - the_scn: A satpy Scene whose bands to compute the irradiance for.
+    - the_dict: A dictionary containing bands to compute the irradiance for.
     - bdict: A dict of the band names and output names to compute the irradiance for.
     Returns:
     - irrad_dict: A dictionary containing the irradiance for each band.
@@ -140,14 +175,119 @@ def _get_band_solar(the_scn, bdict):
     irrad_dict = {}
 
     for band_name in bdict:
-        sensor = the_scn[bdict[band_name]].attrs['sensor']
-        platform = the_scn[bdict[band_name]].attrs['platform_name']
+        sensor = the_dict[bdict[band_name]].attrs['sensor']
+        platform = the_dict[bdict[band_name]].attrs['platform_name']
         srf = RelativeSpectralResponse(platform, sensor)
         cur_rsr = srf.rsr[bdict[band_name]]
         irrad = SIS().inband_solarirradiance(cur_rsr)
         irrad_dict[band_name] = irrad
 
     return irrad_dict
+
+
+def compute_fire_datasets(indata_dict, irrad_dict, bdict):
+    """Compute the intermediate datasets used for fire detection.
+    Inputs:
+    - indata_dict: A dictionary containing the input datasets.
+    - irrad_dict: A dictionary containing the solar irradiance values for each band.
+    - bdict: Dictionary of bands to read from L1 files.
+    Returns:
+    - indata_dict: The input dictionary, with the computed datasets added.
+    """
+    indata_dict['BTD'] = indata_dict['MIR__BT'] - indata_dict['LW1__BT']
+    indata_dict['BTD'].attrs = indata_dict['MIR_RAD'].attrs
+    indata_dict['BTD'].attrs['name'] = 'BTD'
+
+    sat = indata_dict['LW1__BT'].attrs['platform_name']
+    sen = indata_dict['LW1__BT'].attrs['sensor']
+    det = 'det-1'
+
+    rsr = RelativeSpectralResponse(sat, sen)
+    cur_rsr = rsr.rsr[bdict['mir_band']]
+    wvl_mir = cur_rsr[det]['central_wavelength']
+
+    exp_rad = calc_rad_fromtb(indata_dict['LW1__BT'].data, wvl_mir)
+    mir_diffrad = indata_dict['MIR_RAD'].data - exp_rad
+    mir_diffrad = np.where(np.isfinite(mir_diffrad), mir_diffrad, 0)
+
+    mir_noir_name = 'MIR_RAD_NO_IR'
+    indata_dict[mir_noir_name] = indata_dict['MIR_RAD'].copy()
+    indata_dict[mir_noir_name].data = mir_diffrad
+    indata_dict[mir_noir_name].attrs = indata_dict['MIR_RAD'].attrs
+    indata_dict[mir_noir_name].attrs['name'] = mir_noir_name
+
+    indata_dict['VI1_RAD'].data = indata_dict['VI1_RAD'].data * irrad_dict['mir_band'] / irrad_dict['vi1_band']
+    indata_dict['VI2_RAD'].data = indata_dict['VI2_RAD'].data * irrad_dict['mir_band'] / irrad_dict['vi2_band']
+
+    indata_dict['RAD_ADD'] = indata_dict[mir_noir_name] + indata_dict['VI1_RAD']
+    indata_dict['RAD_ADD'] = indata_dict['RAD_ADD'] + indata_dict['VI2_RAD'].data
+    indata_dict['RAD_ADD'].attrs = indata_dict['MIR_RAD'].attrs
+    indata_dict['RAD_ADD'].attrs['name'] = 'RAD_ADD'
+
+    indata_dict['VI1_DIFF'] = indata_dict[mir_noir_name] - indata_dict['VI1_RAD']
+    indata_dict['VI1_DIFF'].attrs = indata_dict['MIR_RAD'].attrs
+    indata_dict['VI1_DIFF'].attrs['name'] = 'VI1_DIFF'
+
+    indata_dict['mi_ndfi'] = indata_dict['MIR_RAD'].copy()
+    indata_dict['mi_ndfi'].attrs['name'] = 'mi_ndfi'
+    indata_dict['mi_ndfi'].data = (indata_dict['MIR__BT'].data - indata_dict['LW1__BT'].data) / (
+                indata_dict['MIR__BT'].data + indata_dict['LW1__BT'].data)
+
+    # Get the angles associated with the Scene
+    indata_dict['SZA'], indata_dict['VZA'], indata_dict['pix_area'] = get_angles(indata_dict['LW1__BT'])
+
+    # Compute the adjusted VI difference, with reduced daytime VIS component
+    adj_vid = vid_adjust_sza(indata_dict['VI1_DIFF'], indata_dict['SZA'])
+    indata_dict['VI1_DIFF_2'] = indata_dict['MIR_RAD'].copy()
+    indata_dict['VI1_DIFF_2'].attrs['name'] = 'mi_ndfi'
+    indata_dict['VI1_DIFF_2'].data = adj_vid
+
+    #
+    final_bnames = ['VI1_RAD', 'VI2_RAD', 'MIR_RAD', 'LW1_RAD', 'MIR__BT', 'LW1__BT',
+                    'MIR_RAD_NO_IR', 'VI1_DIFF', 'mi_ndfi', ]
+    for band in final_bnames:
+        indata_dict[band].data = np.where(np.isfinite(indata_dict[band].data), indata_dict[band].data, np.nan)
+
+        # if lw_bt_thresh > 100:
+        #    scn[band].data = np.where(scn['LW1__BT'].data > lw_bt_thresh, scn[band].data, np.nan)
+        # if mir_bt_thresh > 100:
+        #    scn[band].data = np.where(scn['MIR__BT'].data > mir_bt_thresh, scn[band].data, np.nan)
+
+    return indata_dict
+
+
+
+def get_angles(ref_data):
+    """Compute the solar and viewing zenith angles and the pixel size for a dataset.
+    Inputs:
+    - ref_data: A satpy dataset to be used as a reference.
+    Returns:
+    - sza: The solar zenith angle.
+    - vza: The viewing zenith angle.
+    - pix_area: The pixel area in km^2.
+    """
+    # Solar zenith
+    saa, sza_data = _get_sun_angles(ref_data)
+    sza = ref_data.copy()
+    sza.data = sza_data.data
+    sza.attrs['name'] = 'SZA'
+
+    # Satellite zenith
+    vza = ref_data.copy()
+    vza.data = get_satellite_zenith_angle(ref_data)
+    vza.attrs['name'] = 'VZA'
+
+    # Compute the pixel area
+    # Pixel sizes are in meters, convert to km
+    pix_size = ref_data.attrs['area'].pixel_size_x * ref_data.attrs['area'].pixel_size_x * 1e-6
+
+    # Multiply by inverse vza to gain estimate of pixel size across image.
+    pix_area = ref_data.copy()
+    pix_area.attrs['name'] = 'pix_area'
+    pix_area.data = pix_size / np.cos(np.deg2rad(vza))
+
+    # Return values, casting to float32 to save memory.
+    return sza.astype(np.float32), vza.astype(np.float32), pix_area.astype(np.float32)
 
 
 def initial_load(infiles_l1,
@@ -186,100 +326,27 @@ def initial_load(infiles_l1,
     scn2 = Scene(infiles_l1, reader=l1_reader)
     scn2.load([bdict['lwi_band'], bdict['mir_band']], generate=False)
 
+    scn = scn.resample(scn.coarsest_area(), resampler='native')
+    scn2 = scn2.resample(scn.coarsest_area(), resampler='native')
+
+    data_dict = {'VI1_RAD': scn[bdict['vi1_band']],
+                 'VI2_RAD': scn[bdict['vi2_band']],
+                 'MIR_RAD': scn[bdict['mir_band']],
+                 'LW1_RAD': scn[bdict['lwi_band']],
+                 'LW1__BT': scn2[bdict['lwi_band']].copy(),
+                 'MIR__BT': scn2[bdict['mir_band']].copy()}
 
     # Compute the solar irradiance values
     irrad_dict = _get_band_solar(scn, bdict)
 
-    scn['VI1_RAD'] = scn[bdict['vi1_band']]
-    scn['VI2_RAD'] = scn[bdict['vi2_band']]
-    scn['MIR_RAD'] = scn[bdict['mir_band']]
-    scn['LW1_RAD'] = scn[bdict['lwi_band']]
-    #scn['LW2_RAD'] = scn[bdict['lw2_band']]
-    scn['LW1__BT'] = scn2[bdict['lwi_band']].copy()
-    #scn['LW2__BT'] = scn2[bdict['lw2_band']]
-    scn['MIR__BT'] = scn2[bdict['mir_band']].copy()
-
-    scn['BTD'] = scn['MIR__BT'] - scn['LW1__BT']
-    scn['BTD'].attrs = scn['MIR_RAD'].attrs
-    scn['BTD'].attrs['name'] = 'BTD'
-
-    sat = scn['LW1__BT'].attrs['platform_name']
-    sen = scn['LW1__BT'].attrs['sensor']
-    det = 'det-1'
-
-    rsr = RelativeSpectralResponse(sat, sen)
-    cur_rsr = rsr.rsr[bdict['mir_band']]
-    wvl_mir = cur_rsr[det]['central_wavelength']
-
-    scn = scn.resample(scn.coarsest_area(), resampler='native')
-
-    exp_rad = calc_rad_fromtb(scn['LW1__BT'].data, wvl_mir)
-    mir_diffrad = scn['MIR_RAD'].data - exp_rad
-    mir_diffrad = np.where(np.isfinite(mir_diffrad), mir_diffrad, 0)
-
-    mir_noir_name = 'MIR_RAD_NO_IR'
-    scn[mir_noir_name] = scn['MIR_RAD'].copy()
-    scn[mir_noir_name].data = mir_diffrad
-    scn[mir_noir_name].attrs = scn['MIR_RAD'].attrs
-    scn[mir_noir_name].attrs['name'] = mir_noir_name
-
-    scn['VI1_RAD'].data = scn['VI1_RAD'].data * irrad_dict['mir_band'] / irrad_dict['vi1_band']
-
-    scn['VI1_DIFF'] = scn[mir_noir_name] - scn['VI1_RAD']
-    scn['VI1_DIFF'].attrs = scn['MIR_RAD'].attrs
-    scn['VI1_DIFF'].attrs['name'] = 'VI1_DIFF'
-
-    scn['mi_ndfi'] = scn['MIR_RAD'].copy()
-    scn['mi_ndfi'].attrs['name'] = 'mi_ndfi'
-    scn['mi_ndfi'].data = (scn['MIR__BT'].data - scn['LW1__BT'].data) / (scn['MIR__BT'].data + scn['LW1__BT'].data)
-
-    final_bnames = ['VI1_RAD', 'VI2_RAD', 'MIR_RAD', 'LW1_RAD',
-                    'MIR__BT', 'LW1__BT',
-                    'MIR_RAD_NO_IR', 'VI1_DIFF',
-                    'mi_ndfi',]
-
-    for band in blist:
-        del(scn[band])
-
-    for band in final_bnames:
-        scn[band].data = np.where(np.isfinite(scn[band].data), scn[band].data, np.nan)
-
-        if lw_bt_thresh > 100:
-            scn[band].data = np.where(scn['LW1__BT'].data > lw_bt_thresh, scn[band].data, np.nan)
-        if mir_bt_thresh > 100:
-            scn[band].data = np.where(scn['MIR__BT'].data > mir_bt_thresh, scn[band].data, np.nan)
-
-    # Get the angles associated with the Scene
-
-    # Solar zenith
-    saa, sza = _get_sun_angles(scn['LW1__BT'])
-    scn['SZA'] = scn['LW1__BT'].copy()
-    scn['SZA'].data = sza.data
-    scn['SZA'].attrs['name'] = 'SZA'
-
-    # Satellite zenith
-    scn['VZA'] = scn['LW1__BT'].copy()
-    scn['VZA'].data = get_satellite_zenith_angle(scn['LW1__BT'])
-    scn['VZA'].attrs['name'] = 'VZA'
-
-    # Compute the pixel area
-    scn['pix_area'] = scn['LW1__BT'].copy()
-    scn['pix_area'].attrs['name'] = 'pix_area'
-    pix_area = scn['LW1__BT'].attrs['area'].pixel_size_x * scn['LW1__BT'].attrs['area'].pixel_size_x
-    # Pixel sizes are in meters, convert to km
-    pix_area = pix_area * 1e-6
-
-    # Multiply by inverse vza to gain estimate of pixel size across image.
-    scn['pix_area'] = pix_area / np.cos(np.deg2rad(scn['VZA']))
-
-    # Add an unmodified version of the LWIR band
-    scn['LWIR_BT_RAW'] = scn2[bdict['lwi_band']].copy()
+    # Compute the datasets required for fire detection.
+    data_dict = compute_fire_datasets(data_dict, irrad_dict, bdict)
 
     # Lastly, load the land-sea mask
     if do_load_lsm:
-        scn['LSM'] = load_lsm(scn['BTD'])
+        data_dict['LSM'] = load_lsm(data_dict['BTD'])
 
-    return scn
+    return data_dict
 
 
 def load_lsm(ds, xy_bbox=None, ll_bbox=None):
@@ -296,18 +363,21 @@ def load_lsm(ds, xy_bbox=None, ll_bbox=None):
     import os
     dname = os.path.dirname(PYFc.__file__)
 
+    # Determind the platform used for the LSM
     platform = ds.attrs['platform_name']
     if platform in PYFc.plat_shortnames:
         satname = PYFc.plat_shortnames[platform]
     else:
         raise ValueError(f'Satellite {platform} not supported.')
 
+    # Select correct longitude prefix
     lon = ds.attrs['orbital_parameters']['projection_longitude']
     if lon < 0:
         prefix = 'M'
     else:
         prefix = 'P'
 
+    # Build the expected LSM filename
     lonstr = str(lon).replace('.', '')
     test_fname = f'{dname}/lsm/{satname}_{prefix}{lonstr}_LSM.tif'
     if os.path.exists(test_fname):
@@ -316,24 +386,32 @@ def load_lsm(ds, xy_bbox=None, ll_bbox=None):
         iscn['image'].attrs = ds.attrs
     else:
         raise ValueError(f'Land-sea mask for {platform} not found.')
+
+    # Ensure there's no singleton dimensions
     iscn['image'] = iscn['image'].squeeze()
     if xy_bbox is not None:
         iscn = iscn.crop(xy_bbox=xy_bbox)
     elif ll_bbox is not None:
         iscn = iscn.crop(ll_bbox=ll_bbox)
 
-    data = iscn['image']
-    data.attrs = ds.attrs
-    data.attrs['name'] = 'Land-Sea mask'
+    # Set up some attributes
+    lsm_data = iscn['image']
+    lsm_data.attrs = ds.attrs
+    lsm_data.attrs['name'] = 'Land-Sea mask'
 
-    return data
+    # The LSM is often loaded with differing chunk sizes to the input data, so rechunk to match.
+    lsm_data.data = lsm_data.data.rechunk(ds.data.chunks)
+    lsm_data.coords['x'] = ds.coords['x']
+    lsm_data.coords['y'] = ds.coords['y']
+
+    return lsm_data
 
 
 def comp_stat(x, a, b):
     """Function for the stage 5 confidence assignment (eqn 8 in Roberts)."""
     out = (x - a) / (b - a)
-    out = np.where(x < a, 0, out)
-    out = np.where(x > b, 1, out)
+    out = xr.where(x < a, 0, out)
+    out = xr.where(x > b, 1, out)
     return out
 
 
@@ -347,11 +425,11 @@ def do_stage5(btd, mea_btd, std_btd, bt_mir, mea_mir, std_mir,
     - outarr_frp: An array of identical shape to the input satellite imagery containing estimated FRP values.
     """
 
-    outarr_conf = np.zeros_like(btd)
+    outarr_conf = xr.zeros_like(btd)
 
     nig_sza = 60.
 
-    sza_thr = np.where(sza > nig_sza, nig_sza, sza)
+    sza_thr = xr.where(sza > nig_sza, nig_sza, sza)
 
     z4 = (bt_mir - mea_mir) / std_mir
     zdt = (btd - mea_btd) / std_btd
@@ -389,3 +467,11 @@ def do_stage5(btd, mea_btd, std_btd, bt_mir, mea_mir, std_mir,
     outarr_conf = np.power(c1 * c2 * c3 * c4 * c5, 1./5.)
 
     return outarr_conf
+
+
+def make_output_scene(data_dict):
+    """Create a new satpy Scene from a dict of datasets."""
+    scn = Scene()
+    for ds in data_dict.keys():
+        scn[ds] = data_dict[ds]
+    return scn
