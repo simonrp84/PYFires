@@ -19,7 +19,7 @@
 
 """Cython code for computing windowed statistics across all candidate fire pixels in a dataset."""
 
-from libc.math cimport sqrt, isnan, isfinite
+from libc.math cimport sqrt, isnan, isfinite, cos, M_PI
 cimport numpy as np
 import numpy as np
 import cython
@@ -70,8 +70,10 @@ cdef get_window_mea_stdv(int winsize,
                          unsigned char[:,:] cur__lsm,
                          float cen__mir,
                          float cen__btd,
+                         float cen__lat,
                          unsigned char lsm_land_val = 2,
-                         float mir_min_thresh = 265,
+                         float mir_minlat_thresh = 250,
+                         float mir_maxlat_thresh = 265,
                          float mir_max_thresh = 340,
                          float btd_max_thresh = 7,
                          float lwi_min_thresh = 263.,
@@ -107,6 +109,9 @@ cdef get_window_mea_stdv(int winsize,
     cdef float sum_val_vid = 0
     cdef float mea_val_vid = -999.
     cdef float std_val_vid = -999.
+
+    cdef float mir_slope = mir_maxlat_thresh - mir_minlat_thresh
+    cdef float mir_min_thresh = mir_minlat_thresh + mir_slope * cos(cen__lat * M_PI / 180.)
 
     cdef float res[16]
 
@@ -175,19 +180,19 @@ cdef get_window_mea_stdv(int winsize,
             if lsm_land_val != 255:
                 if cur__lsm[i,j] != lsm_land_val:
                     continue
-            sum_val_vi = sum_val_vi + (cur__vis[i, j] - mea_val_vi) * (cur__vis[i, j] - mea_val_vi)
-            sum_val_nd = sum_val_nd + (cur_ndfi[i, j] - mea_val_nd) * (cur_ndfi[i, j] - mea_val_nd)
-            sum_val_lw = sum_val_lw + (cur__lwi[i, j] - mea_val_lw) * (cur__lwi[i, j] - mea_val_lw)
-            sum_val_btd = sum_val_btd + (cur__btd[i, j] - mea_val_btd) * (cur__btd[i, j] - mea_val_btd)
-            sum_val_mir = sum_val_mir + (cur__mir[i, j] - mea_val_mir) * (cur__mir[i, j] - mea_val_mir)
-            sum_val_vid = sum_val_vid + (cur__vid[i, j] - mea_val_vid) * (cur__vid[i, j] - mea_val_vid)
+            sum_val_vi = sum_val_vi + abs(cur__vis[i, j] - mea_val_vi)
+            sum_val_nd = sum_val_nd + abs(cur_ndfi[i, j] - mea_val_nd)
+            sum_val_lw = sum_val_lw + abs(cur__lwi[i, j] - mea_val_lw)
+            sum_val_btd = sum_val_btd + abs(cur__btd[i, j] - mea_val_btd)
+            sum_val_mir = sum_val_mir + abs(cur__mir[i, j] - mea_val_mir)
+            sum_val_vid = sum_val_vid + abs(cur__vid[i, j] - mea_val_vid)
 
-    std_val_lw = sqrt(sum_val_lw / n_good)
-    std_val_nd = sqrt(sum_val_nd / n_good)
-    std_val_vi = sqrt(sum_val_vi / n_good)
-    std_val_btd = sqrt(sum_val_btd / n_good)
-    std_val_mir = sqrt(sum_val_mir / n_good)
-    std_val_vid = sqrt(sum_val_vid / n_good)
+    std_val_lw = sum_val_lw / n_good
+    std_val_nd = sum_val_nd / n_good
+    std_val_vi = sum_val_vi / n_good
+    std_val_btd = sum_val_btd / n_good
+    std_val_mir = sum_val_mir / n_good
+    std_val_vid = sum_val_vid / n_good
 
     res[0] = perc_good
     res[1] = npix
@@ -216,11 +221,12 @@ def get_mea_std_window(unsigned char[:,:] pfp_data,
                        float[:,:] mir_arr,
                        float[:,:] vid_arr,
                        unsigned char[:,:] lsm,
+                       float[:,:] lats,
                        unsigned char lsm_land_val,
                        int winsize):
 
-    cdef int scn_width = vi_rad_data.shape[0]
-    cdef int scn_height = vi_rad_data.shape[1]
+    cdef int scn_width = int(vi_rad_data.shape[0])
+    cdef int scn_height = int(vi_rad_data.shape[1])
 
     cdef int x_0 = 0
     cdef int x_1 = scn_width
@@ -250,6 +256,7 @@ def get_mea_std_window(unsigned char[:,:] pfp_data,
     min_wsize = 5
     max_wsize = 15
     perc_thresh = 0.65
+    n_thresh = 101
 
     # Loop across all pixels in the image
     for x in range(x_0, x_1):
@@ -274,6 +281,7 @@ def get_mea_std_window(unsigned char[:,:] pfp_data,
 
                 cen_mir = mir_arr[x, y]
                 cen_btd = btd_arr[x, y]
+                cen_lon = lats[x, y]
 
                 # Compute mean and standard deviation across window
                 res = get_window_mea_stdv(wsize,
@@ -286,28 +294,29 @@ def get_mea_std_window(unsigned char[:,:] pfp_data,
                                           cur__lsm,
                                           cen_mir,
                                           cen_btd,
+                                          cen_lon,
                                           lsm_land_val)
                 #print(f'{res[0]:4.4f} {res[1]:4.4f} {res[2]:4.4f} {res[3]:4.4f} {res[4]:4.4f} {res[5]:4.4f}{res[6]:4.4f} {res[7]:4.4f} {res[8]:4.4f} {res[9]:4.4f} {res[10]:4.4f} {res[11]:4.4f} {res[12]:4.4f} {res[13]:4.4f} {res[14]:4.4f} {res[15]:4.4f}')
-                if res[0] > perc_thresh:
+                if (res[0] > perc_thresh) or (res[0] * res[1]) > n_thresh:
                     break
 
             # Set output array to:
             # [0]: Percentage of acceptable pixels in window
-            outarr_view[0, x, y] = res[0]            # Percentage of good pixels
+            outarr_view[0, x, y] = res[0]     # Percentage of good pixels
             outarr_view[1, x, y] = res[1]     # Number of pixels in window
-            outarr_view[2, x, y] = res[2]            # Number of cloudy pixels in window
-            outarr_view[3, x, y] = res[3]            # Number of water body pixels in window
-            outarr_view[4, x, y] = res[4]            # LW BT mean
-            outarr_view[5, x, y] = res[5]            # LW BT std-dev
-            outarr_view[6, x, y] = res[6]            # NDFI mean
-            outarr_view[7, x, y] = res[7]            # NDFI std-dev
-            outarr_view[8, x, y] = res[8]            # VIS radiance mean
-            outarr_view[9, x, y] = res[9]            # VIS radiance std-dev
-            outarr_view[10, x, y] = res[10]           # BTD mean
-            outarr_view[11, x, y] = res[11]          # BTD std-dev
-            outarr_view[12, x, y] = res[12]          # MIR BT mean
-            outarr_view[13, x, y] = res[13]          # MIR BT std-dev
-            outarr_view[14, x, y] = res[14]          # VisDiff mean
-            outarr_view[15, x, y] = res[15]          # VisDiff std-dev
+            outarr_view[2, x, y] = res[2]     # Number of cloudy pixels in window
+            outarr_view[3, x, y] = res[3]     # Number of water body pixels in window
+            outarr_view[4, x, y] = res[4]     # LW BT mean
+            outarr_view[5, x, y] = res[5]     # LW BT std-dev
+            outarr_view[6, x, y] = res[6]     # NDFI mean
+            outarr_view[7, x, y] = res[7]     # NDFI std-dev
+            outarr_view[8, x, y] = res[8]     # VIS radiance mean
+            outarr_view[9, x, y] = res[9]     # VIS radiance std-dev
+            outarr_view[10, x, y] = res[10]   # BTD mean
+            outarr_view[11, x, y] = res[11]   # BTD std-dev
+            outarr_view[12, x, y] = res[12]   # MIR BT mean
+            outarr_view[13, x, y] = res[13]   # MIR BT std-dev
+            outarr_view[14, x, y] = res[14]   # VisDiff mean
+            outarr_view[15, x, y] = res[15]   # VisDiff std-dev
 
     return outarr

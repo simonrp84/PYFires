@@ -30,14 +30,14 @@ import xarray as xr
 import numpy as np
 
 
-def vid_adjust_sza(in_vid, in_sza, sza_adj=82, min_v=0.04, max_v=0.135, slo_str=1.8, slo_rise=0.2):
+def vid_adjust_sza(in_vid, in_sza, sza_adj=82, min_v=0.04, max_v=0.115, slo_str=1.8, slo_rise=0.2):
     """Adjust the VI Difference based on solar zenith angle.
     Inputs:
     - in_vid: The VI Difference data
     - in_sza: The solar zenith angle in degrees
     - sza_adj: The SZA threshold at which adjustment begins. Default value: 82 degrees.
     - min_v: The minimum VID value, used during day. Default value: 0.04
-    - max_v: The maximum VID value, used at night. Default value: 0.135
+    - max_v: The maximum VID value, used at night. Default value: 0.115
     - slo_str: The slope strength. Default value: 1.8
     - slo_rise: The slope rise. Default value: 0.2
     Returns:
@@ -242,7 +242,12 @@ def compute_fire_datasets(indata_dict, irrad_dict, bdict):
     indata_dict['VI1_DIFF_2'].attrs['name'] = 'mi_ndfi'
     indata_dict['VI1_DIFF_2'].data = adj_vid
 
-    #
+    # Get the latitudes, which are needed for contextually filtering background pixels
+    lons, lats = indata_dict['MIR__BT'].attrs['area'].get_lonlats()
+    indata_dict['LATS'] = indata_dict['MIR__BT'].copy()
+    indata_dict['LATS'].attrs['name'] = 'LATS'
+    indata_dict['LATS'].data = lats.astype(np.float32)
+
     final_bnames = ['VI1_RAD', 'VI2_RAD', 'MIR_RAD', 'LW1_RAD', 'MIR__BT', 'LW1__BT',
                     'MIR_RAD_NO_IR', 'VI1_DIFF', 'mi_ndfi', ]
     for band in final_bnames:
