@@ -19,10 +19,22 @@
 
 """Cython code for computing windowed statistics across all candidate fire pixels in a dataset."""
 
-from libc.math cimport sqrt, isnan, isfinite, cos, M_PI
+from libc.stdlib cimport qsort, malloc, free
+from libc.math cimport isnan, cos, M_PI
 cimport numpy as np
 import numpy as np
 import cython
+
+cdef int compare_twofloats(const void *a, const void *b) noexcept nogil: #noqa
+    cdef int a_val = (<const int *> a)[0]
+    cdef int b_val = (<const int *> b)[0]
+
+    if a_val < b_val:
+        return -1
+    if a_val > b_val:
+        return 1
+    return 0
+
 
 @cython.boundscheck(False)
 @cython.cdivision(True)
@@ -83,7 +95,7 @@ cdef get_window_mea_stdv(int winsize,
     cdef int i = 0
     cdef int j = 0
 
-    cdef float n_good = 0
+    cdef int n_good = 0
     cdef float perc_good = 0
 
     cdef float sum_val_vi = 0
@@ -115,8 +127,8 @@ cdef get_window_mea_stdv(int winsize,
 
     cdef float res[16]
 
-    cdef float n_wat = 0
-    cdef float n_cld = 0
+    cdef int n_wat = 0
+    cdef int n_cld = 0
 
 
     # Loop to find mean
@@ -139,21 +151,65 @@ cdef get_window_mea_stdv(int winsize,
                 if cur__lsm[i,j] != lsm_land_val:
                     n_wat = n_wat + 1
                     continue
-            sum_val_vi = sum_val_vi + cur__vis[i, j]
-            sum_val_nd = sum_val_nd + cur_ndfi[i, j]
-            sum_val_lw = sum_val_lw + cur__lwi[i, j]
-            sum_val_btd = sum_val_btd + cur__btd[i, j]
-            sum_val_mir = sum_val_mir + cur__mir[i, j]
-            sum_val_vid = sum_val_vid + cur__vid[i, j]
             n_good = n_good + 1
     perc_good = n_good / (npix - 9)
 
-    mea_val_vi = sum_val_vi / n_good
-    mea_val_nd = sum_val_nd / n_good
-    mea_val_lw = sum_val_lw / n_good
-    mea_val_btd = sum_val_btd / n_good
-    mea_val_mir = sum_val_mir / n_good
-    mea_val_vid = sum_val_vid / n_good
+    cdef float *mainmed_mir = <float *> malloc(n_good * sizeof(float))
+    cdef float *mainmed_btd = <float *> malloc(n_good * sizeof(float))
+    cdef float *mainmed_lwi = <float *> malloc(n_good * sizeof(float))
+    cdef float *mainmed_vi = <float *> malloc(n_good * sizeof(float))
+    cdef float *mainmed_vid = <float *> malloc(n_good * sizeof(float))
+    cdef float *mainmed_nd = <float *> malloc(n_good * sizeof(float))
+
+    cdef int cur_n = 0
+
+    for i in range(0, arrsize):
+        for j in range(0, arrsize):
+            if i >= winsize - 1 and i <= winsize + 1 and j >= winsize - 1 and j <= winsize + 1:
+                continue
+            if cur__mir[i,j] > cen__mir or isnan(cur__mir[i, j]):
+                continue
+            if cur__btd[i,j] > cen__btd or isnan(cur__btd[i, j]):
+                continue
+            if cur__mir[i,j] < mir_min_thresh or cur__mir[i,j] > mir_max_thresh:
+                continue
+            if cur__btd[i,j] > btd_max_thresh:
+                continue
+            if cur__lwi[i,j] < lwi_min_thresh or isnan(cur__lwi[i, j]):
+                continue
+            if lsm_land_val != 255:
+                if cur__lsm[i,j] != lsm_land_val:
+                    continue
+            mainmed_mir[cur_n] = cur__mir[i, j]
+            mainmed_btd[cur_n] = cur__btd[i, j]
+            mainmed_lwi[cur_n] = cur__lwi[i, j]
+            mainmed_vi[cur_n] = cur__vis[i, j]
+            mainmed_vid[cur_n] = cur__vid[i, j]
+            mainmed_nd[cur_n] = cur_ndfi[i, j]
+            cur_n = cur_n + 1
+
+    with cython.nogil:
+        qsort(mainmed_mir, n_good, sizeof(float), compare_twofloats)
+        qsort(mainmed_btd, n_good, sizeof(float), compare_twofloats)
+        qsort(mainmed_lwi, n_good, sizeof(float), compare_twofloats)
+        qsort(mainmed_vi, n_good, sizeof(float), compare_twofloats)
+        qsort(mainmed_vid, n_good, sizeof(float), compare_twofloats)
+        qsort(mainmed_nd, n_good, sizeof(float), compare_twofloats)
+
+        if n_good % 2 == 0:
+            mea_val_vi = (mainmed_vi[n_good / 2] + mainmed_vi[n_good / 2 - 1]) / 2
+            mea_val_nd = (mainmed_nd[n_good / 2] + mainmed_nd[n_good / 2 - 1]) / 2
+            mea_val_lw = (mainmed_lwi[n_good / 2] + mainmed_lwi[n_good / 2 - 1]) / 2
+            mea_val_btd = (mainmed_btd[n_good / 2] + mainmed_btd[n_good / 2 - 1]) / 2
+            mea_val_mir = (mainmed_mir[n_good / 2] + mainmed_mir[n_good / 2 - 1]) / 2
+            mea_val_vid = (mainmed_vid[n_good / 2] + mainmed_vid[n_good / 2 - 1]) / 2
+        else:
+            mea_val_vi = mainmed_vi[n_good / 2]
+            mea_val_nd = mainmed_nd[n_good / 2]
+            mea_val_lw = mainmed_lwi[n_good / 2]
+            mea_val_btd = mainmed_btd[n_good / 2]
+            mea_val_mir = mainmed_mir[n_good / 2]
+            mea_val_vid = mainmed_vid[n_good / 2]
 
      # Loop to find standard deviation
     sum_val_vi = 0
@@ -162,7 +218,6 @@ cdef get_window_mea_stdv(int winsize,
     sum_val_btd = 0
     sum_val_mir = 0
     sum_val_vid = 0
-
     for i in range(0, arrsize):
         for j in range(0, arrsize):
             if i >= winsize - 1 and i <= winsize + 1 and j >= winsize - 1 and j <= winsize + 1:
