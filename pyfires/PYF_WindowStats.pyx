@@ -25,6 +25,122 @@ cimport numpy as np
 import numpy as np
 import cython
 
+
+def get_local_stats(procpix, mir_bt, btd, vid):
+    """Python wrapper for cython local statistics function.
+    Inputs:
+     - proc_pix: A binary mask indicating which pixels to process (NxM array)
+     - mirbt: The MIR brightness temperature (NxM array)
+     - btd: The brightness temperature difference (NxM array)
+     - vid: The MIR radiance minus VIS and LWIR components (NxM array)
+    Returns:
+     - diffarr: The average differences between the pixel and its neighbours for
+                each of the three input arrays: mir, btd, vid)  (NxMx3 array)
+    """
+    return _get_local_stats(procpix, mir_bt, btd, vid)
+
+
+@cython.boundscheck(False)
+@cython.cdivision(True)
+@cython.wraparound(False)
+@cython.initializedcheck(False)
+cdef _get_local_stats(unsigned char[:,:] proc_pix,
+                     float [:, :] mirbt,
+                     float [:, :] btd,
+                     float [:, :] vid):
+    """Compute the local statistics for the current pixel.
+    Inputs:
+     - proc_pix: A binary mask indicating which pixels to process (NxM array)
+     - mirbt: The MIR brightness temperature (NxM array)
+     - btd: The brightness temperature difference (NxM array)
+     - vid: The MIR radiance minus VIS and LWIR components (NxM array)
+    Returns:
+     - diffarr: The average differences between the pixel and its neighbours for
+                each of the three input arrays: mir, btd, vid)  (NxMx3 array)
+    """
+    cdef int xpos = 0
+    cdef int ypos = 0
+    cdef int n_good = 0
+
+    cdef float mirdif = 0
+    cdef float btdif = 0
+    cdef float viddif = 0
+
+    cdef int scn_width = int(proc_pix.shape[0])
+    cdef int scn_height = int(proc_pix.shape[1])
+
+    cdef np.ndarray[dtype=np.float32_t, ndim=3] outarr = np.zeros((scn_width, scn_height, 3), dtype=np.single)
+    cdef float[:,:, ::1] outarr_view = outarr
+
+    for xpos in range(1, scn_width - 1):
+        for ypos in range(1, scn_height - 1):
+            #print(xpos, ypos)
+            # If current pixel is not a fire candidate, skip
+            if proc_pix[xpos, ypos] == 0:
+                continue
+
+            # Initialise counter
+            n_good = 0
+
+            if proc_pix[xpos - 1, ypos + 1] == 0:
+                outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] +  (mirbt[xpos, ypos] - mirbt[xpos - 1, ypos + 1])
+                outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] +  (btd[xpos, ypos] - btd[xpos - 1, ypos + 1])
+                outarr[xpos, ypos, 2] = outarr[xpos, ypos, 2] +  (vid[xpos, ypos] - vid[xpos - 1, ypos + 1])
+                n_good = n_good + 1
+            if proc_pix[xpos -1 , ypos] == 0:
+                outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] +  (mirbt[xpos, ypos] - mirbt[xpos - 1, ypos])
+                outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] +  (btd[xpos, ypos] - btd[xpos - 1, ypos])
+                outarr[xpos, ypos, 2] = outarr[xpos, ypos, 2] +  (vid[xpos, ypos] - vid[xpos - 1, ypos])
+                n_good = n_good + 1
+            if proc_pix[xpos - 1, ypos - 1] == 0:
+                outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] +  (mirbt[xpos, ypos] - mirbt[xpos - 1, ypos - 1])
+                outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] +  (btd[xpos, ypos] - btd[xpos - 1, ypos - 1])
+                outarr[xpos, ypos, 2] = outarr[xpos, ypos, 2] +  (vid[xpos, ypos] - vid[xpos - 1, ypos - 1])
+                n_good = n_good + 1
+
+            if proc_pix[xpos, ypos + 1] == 0:
+                outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] +  (mirbt[xpos, ypos] - mirbt[xpos, ypos + 1])
+                outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] +  (btd[xpos, ypos] - btd[xpos, ypos + 1])
+                outarr[xpos, ypos, 2] = outarr[xpos, ypos, 2] +  (vid[xpos, ypos] - vid[xpos, ypos + 1])
+                n_good = n_good + 1
+            if proc_pix[xpos, ypos - 1] == 0:
+                outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] +  (mirbt[xpos, ypos] - mirbt[xpos, ypos - 1])
+                outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] +  (btd[xpos, ypos] - btd[xpos, ypos - 1])
+                outarr[xpos, ypos, 2] = outarr[xpos, ypos, 2] +  (vid[xpos, ypos] - vid[xpos, ypos - 1])
+                n_good = n_good + 1
+
+            if proc_pix[xpos + 1, ypos + 1] == 0:
+                outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] +  (mirbt[xpos, ypos] - mirbt[xpos + 1, ypos + 1])
+                outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] +  (btd[xpos, ypos] - btd[xpos + 1, ypos + 1])
+                outarr[xpos, ypos, 2] = outarr[xpos, ypos, 2] +  (vid[xpos, ypos] - vid[xpos + 1, ypos + 1])
+                n_good = n_good + 1
+            if proc_pix[xpos + 1, ypos] == 0:
+                outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] +  (mirbt[xpos, ypos] - mirbt[xpos + 1, ypos])
+                outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] +  (btd[xpos, ypos] - btd[xpos + 1, ypos])
+                outarr[xpos, ypos, 2] = outarr[xpos, ypos, 2] +  (vid[xpos, ypos] - vid[xpos + 1, ypos])
+                n_good = n_good + 1
+            if proc_pix[xpos + 1, ypos - 1] == 0:
+                outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] +  (mirbt[xpos, ypos] - mirbt[xpos + 1, ypos - 1])
+                outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] +  (btd[xpos, ypos] - btd[xpos + 1, ypos - 1])
+                outarr[xpos, ypos, 2] = outarr[xpos, ypos, 2] +  (vid[xpos, ypos] - vid[xpos + 1, ypos - 1])
+                n_good = n_good + 1
+
+            if n_good < 1:
+                outarr[xpos, ypos, 0] = 1.
+                outarr[xpos, ypos, 1] = 1.
+                outarr[xpos, ypos, 2] = 1.
+            else:
+                outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] / float(n_good)
+                outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] / float(n_good)
+                outarr[xpos, ypos, 2] = outarr[xpos, ypos, 2] / float(n_good)
+
+    return outarr
+
+
+@cython.boundscheck(False)
+@cython.cdivision(True)
+@cython.wraparound(False)
+@cython.initializedcheck(False)
 cdef int compare_twofloats(const void *a, const void *b) noexcept nogil: #noqa
     cdef int a_val = (<const int *> a)[0]
     cdef int b_val = (<const int *> b)[0]
