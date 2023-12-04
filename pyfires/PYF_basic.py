@@ -28,6 +28,7 @@ from pyspectral.rsr_reader import RelativeSpectralResponse
 from satpy.modifiers.angles import _get_sun_angles
 import xarray as xr
 import numpy as np
+import dask
 
 
 def vid_adjust_sza(in_vid, in_sza, sza_adj=82, min_v=0.04, max_v=0.115, slo_str=1.8, slo_rise=0.2):
@@ -135,7 +136,6 @@ def convert_radiance(the_scn, blist):
     Returns:
      - the_scn: Modified scene containing converted radiances.
     """
-    import scipy.integrate as integ
 
     det = 'det-1'
 
@@ -169,7 +169,7 @@ def _get_band_solar(the_dict, bdict):
     - irrad_dict: A dictionary containing the irradiance for each band.
 
     """
-    from pyspectral.solar import SolarIrradianceSpectrum as SIS
+    from pyspectral.solar import SolarIrradianceSpectrum as SiS
     from pyspectral.rsr_reader import RelativeSpectralResponse
 
     irrad_dict = {}
@@ -179,7 +179,7 @@ def _get_band_solar(the_dict, bdict):
         platform = the_dict[bdict[band_name]].attrs['platform_name']
         srf = RelativeSpectralResponse(platform, sensor)
         cur_rsr = srf.rsr[bdict[band_name]]
-        irrad = SIS().inband_solarirradiance(cur_rsr)
+        irrad = SiS().inband_solarirradiance(cur_rsr)
         irrad_dict[band_name] = irrad
 
     return irrad_dict
@@ -238,6 +238,7 @@ def compute_fire_datasets(indata_dict, irrad_dict, bdict):
 
     # Compute the adjusted VI difference, with reduced daytime VIS component
     adj_vid = vid_adjust_sza(indata_dict['VI1_DIFF'], indata_dict['SZA'])
+    adj_vid = xr.where(np.isfinite(adj_vid), adj_vid, 0)
     indata_dict['VI1_DIFF_2'] = indata_dict['MIR_RAD'].copy()
     indata_dict['VI1_DIFF_2'].attrs['name'] = 'mi_ndfi'
     indata_dict['VI1_DIFF_2'].data = adj_vid
@@ -253,12 +254,25 @@ def compute_fire_datasets(indata_dict, irrad_dict, bdict):
     for band in final_bnames:
         indata_dict[band].data = np.where(np.isfinite(indata_dict[band].data), indata_dict[band].data, np.nan)
 
-        # if lw_bt_thresh > 100:
-        #    scn[band].data = np.where(scn['LW1__BT'].data > lw_bt_thresh, scn[band].data, np.nan)
-        # if mir_bt_thresh > 100:
-        #    scn[band].data = np.where(scn['MIR__BT'].data > mir_bt_thresh, scn[band].data, np.nan)
-
     return indata_dict
+
+
+def get_aniso_diffs(vid_ds, niter_list):
+    """Get the standard deviation in anisotropic diffusion of the VI Difference data.
+    Inputs:
+    - vid_ds: The VI Difference data.
+    - niter_list: A list of the number of iterations to perform.
+    Returns:
+     - out_ds: The anisotropic diffusion of the VI Difference data.
+    """
+    from pyfires.PYF_Anisotropy import aniso_diff
+
+    out_list = [vid_ds]
+    for niter in niter_list:
+        out_list.append(aniso_diff(vid_ds.data, niter=niter, kappa=1))
+
+    main_n = np.dstack(out_list)
+    return np.nanstd(main_n, axis=2)
 
 
 
@@ -298,11 +312,6 @@ def get_angles(ref_data):
 def initial_load(infiles_l1,
                  l1_reader,
                  bdict,
-                 infiles_cld=None,
-                 cld_reader=None,
-                 cmask_name=None,
-                 lw_bt_thresh=0,
-                 mir_bt_thresh=0,
                  do_load_lsm=True):
     """Read L1 and Cloudmask from disk based on user preferences.
     Inputs:
@@ -310,11 +319,6 @@ def initial_load(infiles_l1,
      - l1_reader: Satpy reader to use for L1 files.
      - rad_dict: Dictionary of solar irradiance coefficients.
      - bdict: Dictionary of bands to read from L1 files.
-     - infiles_cld: List of cloudmask files to read.
-     - cld_reader: Satpy reader to use for cloudmask files.
-     - cmask_name: Name of cloudmask band to read.
-     - lw_bt_thresh: Threshold LWIR brightness temperature to use for cloudmasking.
-     - mir_bt_thresh: Threshold MIR brightness temperature to use for cloudmasking.
      - do_load_lsm: Boolean, whether to load a land-sea mask (default: True).
     Returns:
      - scn: A satpy Scene containing the data read from disk.
@@ -334,12 +338,31 @@ def initial_load(infiles_l1,
     scn = scn.resample(scn.coarsest_area(), resampler='native')
     scn2 = scn2.resample(scn.coarsest_area(), resampler='native')
 
-    data_dict = {'VI1_RAD': scn[bdict['vi1_band']],
-                 'VI2_RAD': scn[bdict['vi2_band']],
-                 'MIR_RAD': scn[bdict['mir_band']],
-                 'LW1_RAD': scn[bdict['lwi_band']],
-                 'LW1__BT': scn2[bdict['lwi_band']].copy(),
-                 'MIR__BT': scn2[bdict['mir_band']].copy()}
+    return sort_l1(scn[bdict['vi1_band']],
+                   scn[bdict['vi2_band']],
+                   scn[bdict['mir_band']],
+                   scn[bdict['lwi_band']],
+                   scn2[bdict['mir_band']],
+                   scn2[bdict['lwi_band']],
+                   bdict,
+                   do_load_lsm=do_load_lsm)
+
+
+def sort_l1(vi1_raddata,
+            vi2_raddata,
+            mir_raddata,
+            lw1_raddata,
+            mir_btdata,
+            lw1_btdata,
+            bdict,
+            do_load_lsm=True):
+
+    data_dict = {'VI1_RAD': vi1_raddata,
+                 'VI2_RAD': vi2_raddata,
+                 'MIR_RAD': mir_raddata,
+                 'LW1_RAD': lw1_raddata,
+                 'MIR__BT': mir_btdata,
+                 'LW1__BT': lw1_btdata}
 
     # Compute the solar irradiance values
     irrad_dict = _get_band_solar(scn, bdict)
@@ -430,8 +453,6 @@ def do_stage5(btd, mea_btd, std_btd, bt_mir, mea_mir, std_mir,
     - outarr_frp: An array of identical shape to the input satellite imagery containing estimated FRP values.
     """
 
-    outarr_conf = xr.zeros_like(btd)
-
     nig_sza = 60.
 
     sza_thr = xr.where(sza > nig_sza, nig_sza, sza)
@@ -478,5 +499,27 @@ def make_output_scene(data_dict):
     """Create a new satpy Scene from a dict of datasets."""
     scn = Scene()
     for ds in data_dict.keys():
-        scn[ds] = data_dict[ds]
+        if type(data_dict[ds]) is xr.DataArray:
+            scn[ds] = data_dict[ds]
     return scn
+
+
+def calc_frp(data_dict):
+    """Calculate the fire radiative power for candidate fire pixels.
+    Inputs:
+     - data_dict: A dict containing the mask of candidates, plus contextual window stats.
+    Returns:
+     - data_dict: Updated dict now also containing the FRP estimates.
+    """
+
+    a_val = PYFc.rad_to_bt_dict[data_dict['pix_area'].attrs['platform_name']]
+    frp_est = (data_dict['pix_area'] * PYFc.sigma / a_val) * (data_dict['MIR__BT'] - data_dict['mean_mir'])
+    frp_est = xr.where(data_dict['mean_mir'] > 0, frp_est, 0)
+    frp_est = xr.where(data_dict['fire_dets'] > 0, frp_est, 0)
+
+    data_dict['frp_est'] = data_dict['LW1__BT'].copy()
+    data_dict['frp_est'].attrs['name'] = 'frp_estimate'
+    data_dict['frp_est'].attrs['units'] = 'MW'
+    data_dict['frp_est'].data = frp_est
+
+    return data_dict

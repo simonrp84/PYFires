@@ -20,6 +20,7 @@
 """An example script showing how to detect fires using pyfires and Himawari/AHI data."""
 
 from dask.diagnostics import Profiler, ResourceProfiler, visualize
+from dask_image.ndfilters import convolve, maximum_filter
 
 import dask
 
@@ -31,11 +32,10 @@ satpy.config.set({'cache_dir': "D:/sat_data/cache/"})
 satpy.config.set({'cache_sensor_angles': False})
 satpy.config.set({'cache_lonlats': True})
 
-from pyfires.PYF_detection import stage1_tests, run_basic_night_detection
-from pyfires.PYF_WindowStats import get_mea_std_window
+from pyfires.PYF_WindowStats import get_mea_std_window, get_local_stats
+from pyfires.PYF_detection import stage1_tests
 from pyfires.PYF_basic import *
 
-import dask.array as da
 from tqdm import tqdm
 from glob import glob
 import xarray as xr
@@ -69,9 +69,7 @@ def main(curfile, out_dir):
     # Load the data
     data_dict = initial_load(ifiles_l15,  # List of files to load
                              'ahi_hsd',  # The reader to use, in this case the AHI HSD reader
-                             bdict,  # The bands to load
-                             mir_bt_thresh=270,  # The threshold for the MIR band, pixels cooler than this are excluded.
-                             lw_bt_thresh=260)  # The threshold for the LWIR band, pixels cooler than this are excluded.
+                             bdict)  # The bands to load
 
     # Select potential fire pixels using the Roberts + Wooster Stage 1 + 2 tests
     data_dict['PFP'] = stage1_tests(data_dict['MIR__BT'],
@@ -82,26 +80,9 @@ def main(curfile, out_dir):
                                     ksizes=[5, 7, 9],
                                     do_lsm_mask=True)
 
-    opts = {'def_fire_rad_vis': 0.5,
-            'def_fire_rad_vid': 0.1,
-            'sza_thresh': 97,
-            'vid_thresh': 0.02
-            }
-
-    night_res = run_basic_night_detection(data_dict['VI2_RAD'],
-                                          data_dict['SZA'],
-                                          data_dict['VI1_DIFF'],
-                                          data_dict['PFP'],
-                                          opts)
-
-    data_dict['VI1_DIFF_2'] = vid_adjust_sza(data_dict['VI1_DIFF'], data_dict['SZA'])
-
-    dets_arr = (data_dict['VI1_DIFF_2'] > 0).astype(np.uint8)
-    dets_arr.data = xr.where(data_dict['PFP'] > 0, dets_arr.data, 0)
-
-    # This section computes windowed statistics around each candidate fire pixel.
+    # For the potential fire pixels previously defined, compute the per-pixel windows stats
     wrap_get_mean_std = dask.delayed(get_mea_std_window)
-    outa = wrap_get_mean_std(dets_arr.data,  # Potential fire pixel candidates
+    outa = wrap_get_mean_std(data_dict['PFP'].data,
                              data_dict['VI1_RAD'].data,  # VIS chan
                              data_dict['mi_ndfi'].data,  # NDFI
                              data_dict['LW1__BT'].data,  # LW Brightness Temperature
@@ -109,12 +90,14 @@ def main(curfile, out_dir):
                              data_dict['MIR__BT'].data,  # MIR BT
                              data_dict['VI1_DIFF'].data,  # MIR-LWIR-VIS radiance diff
                              data_dict['LSM'].data,  # The land-sea mask
+                             data_dict['LATS'].data,  # The pixel longitudes
                              255,  # The value denoting land in the LSM. If 255, ignore mask
-                             25)  # The maximum window size in pixels
+                             25)
 
-    outan = da.from_delayed(outa, shape=(16, data_dict['BTD'].shape[0], data_dict['BTD'].shape[1]), dtype=np.single)
+    outan = dask.array.from_delayed(outa,
+                                    shape=(16, data_dict['BTD'].shape[0], data_dict['BTD'].shape[1]),
+                                    dtype=np.single)
 
-    # Get the results of the windows statistics code
     perc_good = outan[0, :, :]
     n_winpix = outan[1, :, :]
     n_cloudpix = outan[2, :, :]
@@ -132,92 +115,126 @@ def main(curfile, out_dir):
     mean_vid = outan[14, :, :]
     std_vid = outan[15, :, :]
 
-    vis_window_arr = data_dict['VI1_RAD'] - (mean_vi + 1.5 * std_vi)
-    ndfi_window_arr = data_dict['mi_ndfi'] - (mean_nd + 1.5 * std_nd)
-    btd_window_arr = data_dict['BTD'] - (mean_btd + 1.5 * std_btd)
-    mir_window_arr = data_dict['MIR__BT'] - (mean_mir + 1.5 * std_mir)
-    visdif_window_arr = data_dict['VI1_DIFF'] - (mean_vid + 1.5 * std_vid)
+    # Define some test thresholds for further selection of potential fire pixels
+    vi1_diff_stdm = (data_dict['VI1_DIFF'] - mean_vid) / std_vid
+    mir_bt_stdm = (data_dict['MIR__BT'] - mean_mir) / std_mir
+    vi1_rad_stdm = (data_dict['VI1_RAD'] - mean_vi) / std_vi
 
-    x1 = 0.02
-    x2 = 8.
+    # Compute the anisotropic diffusion of the MIR band at three iteration levels
+    iter_list = [1, 2, 3]
+    wrap_get_aniso_diffs = dask.delayed(get_aniso_diffs)
+    aniso_std = dask.array.from_delayed(wrap_get_aniso_diffs(data_dict['VI1_DIFF_2'],
+                                                             iter_list),
+                                                     shape=data_dict['VI1_DIFF_2'].shape,
+                                                     dtype=np.single)
 
-    t1 = 270
-    t2 = 300
+    # Some additional fire screening tests
+    # Fire pixels will have a high anisotropic diffusion value compared to background
+    main_det_arr = (aniso_std > 0.01).astype(np.uint8)
+    # Fire pixels will also have a radiance compared to non-fire pixels in the MIR
+    main_det_arr = main_det_arr * (data_dict['VI1_DIFF_2'] > -0.15)
+    # Only select pixels that pass the Roberts + Wooster tests
+    main_det_arr = main_det_arr * data_dict['PFP']
 
-    grad = (x2 - x1) / (t2 - t1)
+    main_det_arr = main_det_arr * (vi1_diff_stdm > vi1_rad_stdm * 1.5)
+    main_det_arr = main_det_arr * (mir_bt_stdm > 1.5)
 
-    lw_std_mult = grad * (data_dict['LW1__BT'] - t1)
-    lw_std_mult = xr.where(lw_std_mult > x2, x2, lw_std_mult)
-    lw_std_mult = xr.where(lw_std_mult < x1, x1, lw_std_mult)
+    kern = np.ones((3, 3))
+    fir_d_sum = convolve(main_det_arr.data, kern)
+    local_max = maximum_filter(data_dict['VI1_DIFF'].data, (3, 3))
+    tmp_out = (fir_d_sum == 1) * (data_dict['VI1_DIFF'] == local_max)
 
-    lw_window_arr = mean_lw - lw_std_mult * std_lw
+    main_out = main_det_arr * (fir_d_sum > 1) + tmp_out * main_det_arr
 
-    gd_t4 = mean_mir + 2 * std_mir
-    gd_btd1 = mean_btd + 2.5
-    gd_btd2 = mean_btd + 2 * std_btd
+    main_out = main_out * xr.where(data_dict['MIR__BT'] > mean_mir + 2 * std_mir, main_out, 0)
+    main_out = main_out * xr.where(data_dict['BTD'] > mean_btd + 2.5, main_out, 0)
+    main_out = main_out * xr.where(data_dict['BTD'] > mean_btd + 2 * std_btd, main_out, 0)
 
-    lwbt_mult = (data_dict['LW1__BT'] - 270) / 30
-    lwbt_mult = lwbt_mult.clip(0, 1)
-    lwbt_mult = 1. / (0.25 + 0.75 * lwbt_mult)
+    fir_d_sum = convolve(main_out.data, kern)
+    local_max = maximum_filter(data_dict['MIR__BT'].data, (3, 3))
+    tmp_out = (fir_d_sum == 1) * (data_dict['MIR__BT'] == local_max)
+    main_out = main_out * (fir_d_sum > 1) + main_out * tmp_out
 
-    sza_mult = 0.4 + ((90 - data_dict['SZA']) / 90.)
-    ndfi_thresh = 0.001 + ((0.006 * lwbt_mult) + (0.003 / perc_good)) * sza_mult
+    kern = np.array([[-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
+                     [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
+                     [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
+                     [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
+                     [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
+                     [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
+                     [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
+                     [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
+                     [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
+                     [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
+                     [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5]]) / 5
 
-    dets_thresh = 10
+    resx = np.abs(convolve(data_dict['MIR__BT'].data, kern))
+    kern = kern.T
+    resy = np.abs(convolve(data_dict['MIR__BT'].data, kern))
+    res = np.sqrt(resx * resx + resy * resy)
+    main_out = main_out * (res < 500)
 
-    dets_outarr = (dets_arr > 0).astype(np.uint8)  # t1
-    dets_outarr = dets_outarr + (ndfi_window_arr > ndfi_thresh).astype(np.uint8)  # t2
-    dets_outarr = dets_outarr + (visdif_window_arr > 0).astype(np.uint8)  # t3
-    dets_outarr = dets_outarr + (vis_window_arr < 0.1).astype(np.uint8)  # t4
-    dets_outarr = dets_outarr + (data_dict['LW1__BT'] > 260).astype(np.uint8)  # t5
-    dets_outarr = dets_outarr + (mir_window_arr > 0).astype(np.uint8)  # t6
-    dets_outarr = dets_outarr + (data_dict['LSM'] == 2).astype(np.uint8)  # t7
-    dets_outarr = dets_outarr + (data_dict['MIR__BT'] > gd_t4).astype(np.uint8)  # t8
-    dets_outarr = dets_outarr + (data_dict['BTD'] > gd_btd1).astype(np.uint8)  # t9
-    dets_outarr = dets_outarr + (data_dict['BTD'] > gd_btd2).astype(np.uint8)  # t10
-    dets_outarr = dets_outarr + (data_dict['LW1__BT'] > lw_window_arr).astype(np.uint8)  # t11
-    #dets_outarr = xr.where(perc_good > 0.4, dets_outarr, 0)  # t12
-    #dets_outarr = xr.where(dets_arr > 0, dets_outarr, 0)  # final
 
-   # dets_outarr = xr.where(dets_outarr >= dets_thresh, dets_outarr, 0)  # final
+    delayed_local_stats = dask.delayed(get_local_stats)
+    locarr = delayed_local_stats(main_out.data,
+                                 data_dict['MIR__BT'].data,
+                                 data_dict['BTD'].data,
+                                 data_dict['VI1_DIFF'].data)
+    locarrn = dask.array.from_delayed(locarr,
+                                      shape=(data_dict['BTD'].shape[0], data_dict['BTD'].shape[1], 3),
+                                      dtype=np.single)
+    mirdif = locarrn[:, :, 0]
+    btddif = locarrn[:, :, 1]
+    viddif = locarrn[:, :, 2]
 
-    vi_diff_def_thr = 0.25
+    main_out = main_out * (btddif > 1) * (viddif > 0.04)
+    main_out = main_out * (data_dict['BTD'] > mean_btd + std_mir + std_btd)
 
-    fire_dets = xr.where(data_dict['VI1_DIFF'] > vi_diff_def_thr, dets_outarr + 1, dets_outarr)
+    kern = np.ones((3, 3))
+    fir_d_sum = convolve(main_out.data, kern)
+    local_max = maximum_filter(data_dict['VI1_DIFF'].data, (3, 3))
+    out5 = (fir_d_sum == 1) * (data_dict['VI1_DIFF'] == local_max)
+    main_out = main_out * (fir_d_sum > 1) + out5 * main_out
 
-    data_dict['fire_detection'] =  data_dict['LW1__BT'].copy()
-    data_dict['fire_detection'].attrs['name'] = 'fire_detection'
-    data_dict['fire_detection'].data = fire_dets
+    kern_ones = np.ones((3, 3))
+    fir_d_sum = convolve(main_out.data, kern_ones)
+    local_max = maximum_filter(data_dict['MIR__BT'].data, (3, 3))
+    out5 = (fir_d_sum == 1) * (data_dict['MIR__BT'] == local_max)
+    main_out = main_out * (fir_d_sum > 1) + out5 * main_out
 
-    conf_val = do_stage5(data_dict['BTD'],
-                         mean_btd,
-                         std_btd,
-                         data_dict['MIR__BT'],
-                         mean_mir,
-                         std_mir,
-                         data_dict['SZA'],
-                         n_winpix, n_cloudpix,
-                         n_waterpix)
+    # Absolute MIR BT threshold before a pixel is declared 'fire'
+    mir_abs_thresh = 350
+    # BTD thresh for adding back missing pixels
+    min_btd_addback = 2
+    max_btd_addback = 15
 
-    conf_val = xr.where(dets_outarr >= dets_thresh, conf_val, 0)
+    main_out_tmp = main_out + xr.where(data_dict['MIR__BT'] > mir_abs_thresh, 1, 0).astype(np.uint8)
+    main_out_tmp = xr.where(main_out_tmp > 0, 1, 0).astype(np.uint8)
 
-    data_dict['conf_val'] = data_dict['LW1__BT'].copy()
-    data_dict['conf_val'].attrs['name'] = 'fire_confidence'
-    data_dict['conf_val'].data = conf_val
+    fir_d_sum = convolve(main_out_tmp.data, kern_ones)
 
-    a_val = PYFc.rad_to_bt_dict[data_dict['pix_area'].attrs['platform_name']]
-    frp_est = (data_dict['pix_area'] * PYFc.sigma / a_val) * (data_dict['MIR__BT'] - mean_mir)
-    frp_est = xr.where(mean_mir > 0, frp_est, 0)
-    frp_est = xr.where(dets_outarr >= dets_thresh, frp_est, 0)
+    # Threshold for adding missing fire pixels, as the algorithm removes some pixels adjacent to existing detections
+    # We add back using the BTD weighted by the number of fire pixels adjacent to the candidate.
+    btd_addback_thresh = (9 - fir_d_sum) * (
+                8 / (max_btd_addback - min_btd_addback)) + min_btd_addback + mean_btd + std_btd
+    btd_addback_thresh = btd_addback_thresh * data_dict['PFP']
 
-    data_dict['frp_est'] = data_dict['LW1__BT'].copy()
-    data_dict['frp_est'].attrs['name'] = 'frp_estimate'
-    data_dict['frp_est'].attrs['units'] = 'MW'
-    data_dict['frp_est'].data = frp_est
+    main_out = main_out_tmp + xr.where(data_dict['BTD'] > btd_addback_thresh, 1, 0).astype(np.uint8)
+    main_out = (xr.where(main_out > 0, 1, 0).astype(np.uint8) *
+                xr.where(data_dict['PFP'] > 0, 1, 0).astype(np.uint8) *
+                xr.where(fir_d_sum > 0, 1, 0).astype(np.uint8))
 
-    scn = make_output_scene(data_dict)
+    data_dict['mean_mir'] = mean_mir
+    data_dict['mean_btd'] = mean_btd
+    data_dict['std_btd'] = std_btd
 
-    scn.save_datasets(datasets=['PFP', 'frp_est', 'fire_detection'], base_dir=out_dir, enhance=False, dtype=np.float32)
+    data_dict['fire_dets'] = data_dict['LW1__BT'].copy()
+    data_dict['fire_dets'].attrs['name'] = 'fire_dets'
+    data_dict['fire_dets'].attrs['units'] = ''
+    data_dict['fire_dets'].data = main_out
+
+    data_dict = calc_frp(data_dict)
+
+    return data_dict['fire_dets'], data_dict['frp_est']
 
 
 if __name__ == "__main__":
@@ -226,11 +243,11 @@ if __name__ == "__main__":
     indir = 'D:/sat_data/ahi_main/in/'
     odir = 'D:/sat_data/ahi_main/out/'
 
-    curfiles = glob(f'{indir}/0840/*B07*S01*.DAT', recursive=True)
+    curfiles = glob(f'{indir}/1650/*B07*S01*.DAT', recursive=True)
     curfiles.sort()
 
     for curinf in tqdm(curfiles):
         with Profiler() as prof, ResourceProfiler(dt=0.25) as rprof:
-            main(curinf, odir)
+            fire_dets, frp_est = main(curinf, odir)
         visualize([prof, rprof], show=False, save=True, filename=odir+"../frp_vis.html")
         break
