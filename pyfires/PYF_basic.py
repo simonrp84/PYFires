@@ -175,8 +175,8 @@ def _get_band_solar(the_dict, bdict):
     irrad_dict = {}
 
     for band_name in bdict:
-        sensor = the_dict[bdict[band_name]].attrs['sensor']
-        platform = the_dict[bdict[band_name]].attrs['platform_name']
+        sensor = the_dict['VI1_RAD'].attrs['sensor']
+        platform = the_dict['VI1_RAD'].attrs['platform_name']
         srf = RelativeSpectralResponse(platform, sensor)
         cur_rsr = srf.rsr[bdict[band_name]]
         irrad = SiS().inband_solarirradiance(cur_rsr)
@@ -217,12 +217,12 @@ def compute_fire_datasets(indata_dict, irrad_dict, bdict):
     indata_dict[mir_noir_name].attrs['name'] = mir_noir_name
 
     indata_dict['VI1_RAD'].data = indata_dict['VI1_RAD'].data * irrad_dict['mir_band'] / irrad_dict['vi1_band']
-    indata_dict['VI2_RAD'].data = indata_dict['VI2_RAD'].data * irrad_dict['mir_band'] / irrad_dict['vi2_band']
+    #indata_dict['VI2_RAD'].data = indata_dict['VI2_RAD'].data * irrad_dict['mir_band'] / irrad_dict['vi2_band']
 
-    indata_dict['RAD_ADD'] = indata_dict[mir_noir_name] + indata_dict['VI1_RAD']
-    indata_dict['RAD_ADD'] = indata_dict['RAD_ADD'] + indata_dict['VI2_RAD'].data
-    indata_dict['RAD_ADD'].attrs = indata_dict['MIR_RAD'].attrs
-    indata_dict['RAD_ADD'].attrs['name'] = 'RAD_ADD'
+    #indata_dict['RAD_ADD'] = indata_dict[mir_noir_name] + indata_dict['VI1_RAD']
+    #indata_dict['RAD_ADD'] = indata_dict['RAD_ADD'] + indata_dict['VI2_RAD'].data
+    #indata_dict['RAD_ADD'].attrs = indata_dict['MIR_RAD'].attrs
+    #indata_dict['RAD_ADD'].attrs['name'] = 'RAD_ADD'
 
     indata_dict['VI1_DIFF'] = indata_dict[mir_noir_name] - indata_dict['VI1_RAD']
     indata_dict['VI1_DIFF'].attrs = indata_dict['MIR_RAD'].attrs
@@ -249,7 +249,7 @@ def compute_fire_datasets(indata_dict, irrad_dict, bdict):
     indata_dict['LATS'].attrs['name'] = 'LATS'
     indata_dict['LATS'].data = lats.astype(np.float32)
 
-    final_bnames = ['VI1_RAD', 'VI2_RAD', 'MIR_RAD', 'LW1_RAD', 'MIR__BT', 'LW1__BT',
+    final_bnames = ['VI1_RAD', 'MIR_RAD', 'LW1_RAD', 'MIR__BT', 'LW1__BT',
                     'MIR_RAD_NO_IR', 'VI1_DIFF', 'mi_ndfi', ]
     for band in final_bnames:
         indata_dict[band].data = np.where(np.isfinite(indata_dict[band].data), indata_dict[band].data, np.nan)
@@ -273,7 +273,6 @@ def get_aniso_diffs(vid_ds, niter_list):
 
     main_n = np.dstack(out_list)
     return np.nanstd(main_n, axis=2)
-
 
 
 def get_angles(ref_data):
@@ -328,7 +327,6 @@ def initial_load(infiles_l1,
     for item in bdict:
         blist.append(bdict[item])
 
-
     scn = Scene(infiles_l1, reader=l1_reader)
     scn.load(blist, calibration='radiance', generate=False)
 
@@ -339,7 +337,6 @@ def initial_load(infiles_l1,
     scn2 = scn2.resample(scn.coarsest_area(), resampler='native')
 
     return sort_l1(scn[bdict['vi1_band']],
-                   scn[bdict['vi2_band']],
                    scn[bdict['mir_band']],
                    scn[bdict['lwi_band']],
                    scn2[bdict['mir_band']],
@@ -349,7 +346,6 @@ def initial_load(infiles_l1,
 
 
 def sort_l1(vi1_raddata,
-            vi2_raddata,
             mir_raddata,
             lw1_raddata,
             mir_btdata,
@@ -358,14 +354,14 @@ def sort_l1(vi1_raddata,
             do_load_lsm=True):
 
     data_dict = {'VI1_RAD': vi1_raddata,
-                 'VI2_RAD': vi2_raddata,
+              #   'VI2_RAD': vi2_raddata,
                  'MIR_RAD': mir_raddata,
                  'LW1_RAD': lw1_raddata,
                  'MIR__BT': mir_btdata,
                  'LW1__BT': lw1_btdata}
 
     # Compute the solar irradiance values
-    irrad_dict = _get_band_solar(scn, bdict)
+    irrad_dict = _get_band_solar(data_dict, bdict)
 
     # Compute the datasets required for fire detection.
     data_dict = compute_fire_datasets(data_dict, irrad_dict, bdict)
