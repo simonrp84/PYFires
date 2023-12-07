@@ -333,16 +333,21 @@ def initial_load(infiles_l1,
     scn2 = Scene(infiles_l1, reader=l1_reader)
     scn2.load([bdict['lwi_band'], bdict['mir_band']], generate=False)
 
-    scn = scn.resample(scn.coarsest_area(), resampler='native')
-    scn2 = scn2.resample(scn.coarsest_area(), resampler='native')
+    scnr = scn.resample(scn.coarsest_area(), resampler='native')
+    scnr2 = scn2.resample(scn.coarsest_area(), resampler='native')
 
-    return sort_l1(scn[bdict['vi1_band']],
-                   scn[bdict['mir_band']],
-                   scn[bdict['lwi_band']],
-                   scn2[bdict['mir_band']],
-                   scn2[bdict['lwi_band']],
+   # for ds in scnr._datasets.keys():
+   #     scnr[ds] = scnr[ds].data.compute()
+   # for ds in scn2._datasets.keys():
+   #     scnr2[ds] r= scnr2[ds].data.compute()
+
+    return sort_l1(scnr[bdict['vi1_band']],
+                   scnr[bdict['mir_band']],
+                   scnr[bdict['lwi_band']],
+                   scnr2[bdict['mir_band']],
+                   scnr2[bdict['lwi_band']],
                    bdict,
-                   do_load_lsm=do_load_lsm)
+                   do_load_lsm=do_load_lsm), scnr, scnr2, scn, scn2
 
 
 def sort_l1(vi1_raddata,
@@ -369,6 +374,11 @@ def sort_l1(vi1_raddata,
     # Lastly, load the land-sea mask
     if do_load_lsm:
         data_dict['LSM'] = load_lsm(data_dict['BTD'])
+    else:
+        data_dict['LSM'] = data_dict['BTD'].copy()
+        data_dict['LSM'].attrs['name'] = 'Land/Sea Mask'
+        data_dict['LSM'].data[:, :] = PYFc.lsm_land_val
+        data_dict['LSM'].data = data_dict['LSM'].data.astype(np.uint8)
 
     return data_dict
 

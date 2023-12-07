@@ -29,7 +29,8 @@ plat_shortnames = {'Himawari-8': 'HIMA',
                    'Meteosat-8': 'MSG',
                    'Meteosat-9': 'MSG',
                    'Meteosat-10': 'MSG',
-                   'Meteosat-11': 'MSG', }
+                   'Meteosat-11': 'MSG',
+                   'MTG-I1': 'MTG'}
 
 
 # These are the radiance-to-temperature conversion coefficients for the FRP calculation.
@@ -48,7 +49,8 @@ rad_to_bt_dict = {
     'GOES-18': 3.15338e-07,
     'Geo-kompsat-2A': 2.34269e-07,
     'fy-4a': 1.53966e-07,
-    'fy-4b': 1.53536e-07
+    'fy-4b': 1.53536e-07,
+    'MTG-I1': 2.02416e-07
 }
 
 # Stefan-Boltzmann constant
