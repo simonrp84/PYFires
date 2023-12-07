@@ -35,7 +35,6 @@ from pyfires.PYF_basic import *
 
 from tqdm import tqdm
 from glob import glob
-import xarray as xr
 import os
 
 import warnings
@@ -59,14 +58,14 @@ def main(curfile, out_dir):
     # MIR should be the mid-IR band closest to 3.8 micron.
     # LWI should be a longwave window channel such as 10.8 micron.
     bdict = {'vi1_band': 'B03',
-          #   'vi2_band': 'B06',
+             #   'vi2_band': 'B06',
              'mir_band': 'B07',
              'lwi_band': 'B13'}
 
     # Load the data
-    data_dict = initial_load(ifiles_l15,  # List of files to load
-                             'ahi_hsd',  # The reader to use, in this case the AHI HSD reader
-                             bdict)  # The bands to load
+    data_dict, s1, s2, sr1, sr2 = initial_load(ifiles_l15,  # List of files to load
+                                               'ahi_hsd',  # The reader to use, in this case the AHI HSD reader
+                                               bdict)  # The bands to load
 
     return run_dets(data_dict)
 
@@ -83,5 +82,5 @@ if __name__ == "__main__":
     for curinf in tqdm(curfiles):
         with Profiler() as prof, ResourceProfiler(dt=0.25) as rprof:
             fire_dets, frp_est = main(curinf, odir)
-        visualize([prof, rprof], show=False, save=True, filename=odir+"../frp_vis.html")
+        visualize([prof, rprof], show=False, save=True, filename=odir + "../frp_vis.html")
         break
