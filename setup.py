@@ -3,6 +3,8 @@ from setuptools import setup
 from Cython.Distutils import Extension
 from Cython.Build import cythonize
 import numpy
+import Cython.Compiler.Options
+Cython.Compiler.Options.annotate = True
 
 extensions = [
     Extension("pyfires.PYF_WindowStats",

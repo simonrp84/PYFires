@@ -19,69 +19,110 @@
 
 """An example script showing how to detect fires using pyfires and Himawari/AHI data."""
 
-from dask.diagnostics import Profiler, ResourceProfiler, visualize
+# By default Dask will use all available CPU cores. On powerful machines this can
+# actually slow down processing, so here we limit the cores it can use.
+# For more info, see: https://satpy.readthedocs.io/en/stable/faq.html#why-is-satpy-slow-on-my-powerful-machine
 import dask
-
 dask.config.set(num_workers=8)
 
+# Set some satpy configuration options for data caching.
+# We cache the lats / lons as they should not change when processing a time series.
+# But we do not cache the sensor angles, and for Himawari these do change!
+# For processing other satellites you may want to cache the angles.
 import satpy
-
 satpy.config.set({'cache_dir': "D:/sat_data/cache/"})
 satpy.config.set({'cache_sensor_angles': False})
 satpy.config.set({'cache_lonlats': True})
 
+# Final imports
+from pyfires.PYF_basic import initial_load, save_output
 from pyfires.PYF_detection import run_dets
-from pyfires.PYF_basic import *
-
+from satpy import Scene
 from tqdm import tqdm
 from glob import glob
 import os
 
-import warnings
+from dask.diagnostics import Profiler, ResourceProfiler, visualize
+from datetime import datetime
 
+# Satpy sometimes spits out some warnings for divide by zero.
+# These are harmless so let's ignore them.
+import warnings
 warnings.filterwarnings('ignore')
 
+def main():
+    # Set the top-level input directory (containing ./HHMM/ subdirs following NOAA AWS format)
+    input_file_dir = 'D:/sat_data/ahi_main/in/'
+    # Set the output directory where FRP images will be saved.
+    output_img_dir = 'D:/sat_data/ahi_main/out/'
 
-def main(curfile, out_dir):
-    pos = curfile.find('B07')
-    dtstr = curfile[pos - 14:pos - 1]
-    # if os.path.exists(f'{out_dir}/frp_estimate_{dtstr}00.tif'):
-    #    print(f'Already processed {dtstr}')
-    #    return
-    # else:
-    #    print("Processing", f'{out_dir}/frp_estimate_{dtstr}00.tif')
-    ifiles_l15 = glob(f'{os.path.dirname(curfile)}/*{dtstr}*.DAT')
+    # Set an X-Y bounding box for cropping the input data.
+    bbox = (-1600000, -2770000, 690000, -1040000)
 
-    # The bands used for processing:
-    # VI1 should be a red band close to 0.6 micron.
-    # VI2 should be a near-infrared band close to 2.2 micron, or 1.6 micron if 2.2 is unavailable.
-    # MIR should be the mid-IR band closest to 3.8 micron.
-    # LWI should be a longwave window channel such as 10.8 micron.
+    # Search for input timeslots.
+    idirs = glob(f'{input_file_dir}/*')
+    idirs.sort()
+
+    # Set up a dictionary mapping band type names to the AHI channel names.
+    # 'vi1_band' is the ~0.64 micron visible channel.
+    # 'mir_band' is the ~3.9 micron mid-infrared channel.
+    # 'lwi_band' is the ~10.4 micron long-wave infrared channel.
     bdict = {'vi1_band': 'B03',
-             #   'vi2_band': 'B06',
              'mir_band': 'B07',
              'lwi_band': 'B13'}
 
-    # Load the data
-    data_dict, s1, s2, sr1, sr2 = initial_load(ifiles_l15,  # List of files to load
-                                               'ahi_hsd',  # The reader to use, in this case the AHI HSD reader
-                                               bdict)  # The bands to load
+    # Loop over timeslots and process data...
+    for cdir in tqdm(idirs):
+        if cdir == idirs[0]:
+            print("\n")
 
-    return run_dets(data_dict)
+        st = datetime.utcnow()
+        # Find files and ensure we have enough to process.
+        ifiles_l15 = glob(cdir+'/*.DAT')
+        if len(ifiles_l15) < 40:
+            continue
+
+        # Create a simple Scene to simplift saving the results.
+        scn = Scene(reader='ahi_hsd', filenames=ifiles_l15)
+        scn.load(['B07'])
+        if bbox:
+            scn = scn.crop(xy_bbox=bbox)
+
+        # Get timeslot from filename
+        curf = ifiles_l15[0]
+        pos = curf.find('HS_H')
+        dtstr = curf[pos+7:pos+7+13]
+
+        # Set output filename
+        outf1 = f'{output_img_dir}/fire_dets_{dtstr}00.tif'
+        outf2 = f'{output_img_dir}/fire_radiative_power_{dtstr}00.tif'
+
+        # Skip files we've already processed
+        if not os.path.isfile(outf1) and not os.path.isfile(outf2):
+
+            # Load the initial data.
+            # Here we don't load the land/sea mask as we're cropping and this is
+            # not (yet) supported by pyfires. For full disk processing you will
+            # likely get more accurate results by enabling the land/sea mask.
+            data_dict = initial_load(ifiles_l15,        # Input file list
+                                     'ahi_hsd',         # Satpy reader name
+                                     bdict,             # Band mapping dict
+                                     do_load_lsm=False, # Don't load land-sea mask
+                                     bbox=bbox)         # Bounding box for cropping
+
+            # Run the detection algorithm. This returns a boolean mask of the
+            # fire detections as well as the actual fire radiative power data.
+            fire_dets, frp_data = run_dets(data_dict)
+           # save_output(scn, fire_dets, 'fire_dets', outf1, ref='B07')
+            save_output(scn, frp_data, 'fire_dets', outf2, ref='B07')
+
+        en = datetime.utcnow()
+
+        print((en-st).total_seconds())
+        break
 
 
 if __name__ == "__main__":
-    # Specify the input and output directories for processing.
-    # The input directory should contain all the AHI files without subdirectories.
-    indir = 'D:/sat_data/ahi_main/in/'
-    odir = 'D:/sat_data/ahi_main/out/'
-
-    curfiles = glob(f'{indir}/1650/*B07*S01*.DAT', recursive=True)
-    curfiles.sort()
-
-    for curinf in tqdm(curfiles):
-        with Profiler() as prof, ResourceProfiler(dt=0.25) as rprof:
-            fire_dets, frp_est = main(curinf, odir)
-            frp_est = np.array(frp_est)
-        visualize([prof, rprof], show=False, save=True, filename=odir + "../frp_vis.html")
-        break
+    with Profiler() as prof, ResourceProfiler(dt=0.25) as rprof:
+        main()
+    visualize([prof, rprof], show=False, save=True, filename="D:/sat_data/ahi_main/frp_vis.html")

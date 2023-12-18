@@ -308,12 +308,12 @@ def run_dets(data_dict):
                              data_dict['VI1_RAD'],  # VIS chan
                              data_dict['mi_ndfi'],  # NDFI
                              data_dict['LW1__BT'],  # LW Brightness Temperature
-                             data_dict['BTD'],  # MIR-LW BTD
+                             data_dict['BTD'],      # MIR-LW BTD
                              data_dict['MIR__BT'],  # MIR BT
-                             data_dict['VI1_DIFF'],  # MIR-LWIR-VIS radiance diff
-                             data_dict['LSM'],  # The land-sea mask
-                             data_dict['LATS'],  # The pixel latitudes
-                             255,  # The value denoting land in the LSM. If 255, ignore mask
+                             data_dict['VI1_DIFF'], # MIR-LWIR-VIS radiance diff
+                             data_dict['LSM'],      # The land-sea mask
+                             data_dict['LATS'],     # The pixel latitudes
+                             255,                   # The value denoting land in the LSM. If 255, ignore mask
                              25)
 
     outan = dask.array.from_delayed(outa,
@@ -344,6 +344,7 @@ def run_dets(data_dict):
 
     # Compute the anisotropic diffusion of the MIR band at three iteration levels
     iter_list = [1, 2, 3]
+
     wrap_get_aniso_diffs = dask.delayed(get_aniso_diffs)
     aniso_std = dask.array.from_delayed(wrap_get_aniso_diffs(data_dict['VI1_DIFF_2'],
                                                              iter_list),

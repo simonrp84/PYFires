@@ -83,11 +83,11 @@ def calc_tb_fromrad(rad, cwl):
     return first / second
 
 
-def save_output(inscn, indata, name, odir, ref='B07'):
+def save_output(inscn, indata, name, fname, ref='B07'):
     inscn[name] = inscn[ref].copy()
     inscn[name].attrs['name'] = name
     inscn[name].data = indata
-    inscn.save_dataset(name, base_dir=odir, enhance=False, dtype=np.float32)
+    inscn.save_dataset(name, filename=fname, enhance=False, dtype=np.float32, fill_value=0)
 
 
 def bt_to_rad(wvl, bt, d0, d1, d2):
@@ -242,14 +242,16 @@ def get_angles(ref_data):
 def initial_load(infiles_l1,
                  l1_reader,
                  bdict,
-                 do_load_lsm=True):
-    """Read L1 and Cloudmask from disk based on user preferences.
+                 do_load_lsm=True,
+                 bbox=None,):
+    """Read L1 data from disk based on user preferences.
     Inputs:
      - infiles_l1: List of L1 files to read.
      - l1_reader: Satpy reader to use for L1 files.
      - rad_dict: Dictionary of solar irradiance coefficients.
      - bdict: Dictionary of bands to read from L1 files.
      - do_load_lsm: Boolean, whether to load a land-sea mask (default: True).
+     - bbox: Optional, a bounding box in x/y coordinates. If not given, full disk will be processed.
     Returns:
      - scn: A satpy Scene containing the data read from disk.
     """
@@ -264,6 +266,10 @@ def initial_load(infiles_l1,
     scn2 = Scene(infiles_l1, reader=l1_reader)
     scn2.load([bdict['lwi_band'], bdict['mir_band']], generate=False)
 
+    if bbox:
+        scn = scn.crop(xy_bbox=bbox)
+        scn2 = scn2.crop(xy_bbox=bbox)
+
     scnr = scn.resample(scn.coarsest_area(), resampler='native')
     scnr2 = scn2.resample(scn.coarsest_area(), resampler='native')
 
@@ -273,7 +279,7 @@ def initial_load(infiles_l1,
                    scnr2[bdict['mir_band']],
                    scnr2[bdict['lwi_band']],
                    bdict,
-                   do_load_lsm=do_load_lsm), scnr, scnr2, scn, scn2
+                   do_load_lsm=do_load_lsm)
 
 
 def sort_l1(vi1_raddata,
