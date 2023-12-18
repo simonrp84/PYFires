@@ -18,7 +18,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 """Basic reading functions for data preparation."""
-
+import dask.array
 from satpy.modifiers.angles import get_satellite_zenith_angle
 from dask_image.ndfilters import convolve
 import pyfires.PYF_Consts as PYFc
@@ -47,9 +47,7 @@ def vid_adjust_sza(in_vid, in_sza, sza_adj=82, min_v=0.04, max_v=0.115, slo_str=
 
     adj_val = min_v + (max_v - min_v) * (1 / (1 + np.exp(-slo_str * (in_sza - sza_adj))) ** slo_rise)
 
-    adj_vid = in_vid.copy()
-    adj_vid.attrs['name'] = 'VI1_DIFF_ADJ'
-    adj_vid.data = in_vid - adj_val
+    adj_vid = in_vid - adj_val
     return adj_vid
 
 
@@ -58,13 +56,9 @@ def conv_kernel(indata, ksize=5):
 
     kern = np.ones((ksize, ksize))
     kern = kern / np.sum(kern)
-    res = convolve(indata.data, kern)
+    res = convolve(indata, kern)
 
-    outds = indata.copy()
-    outds.attrs['name'] = indata.attrs['name'] + f'_conv{ksize}'
-    outds.data = res
-
-    return outds
+    return res
 
 
 def calc_rad_fromtb(temp, cwl):
@@ -123,43 +117,6 @@ def rad_to_bt(wvl, rad, c0, c1, c2):
     return c0 + c1 * bt + c2 * bt * bt
 
 
-def convert_radiance(the_scn, blist):
-    """Convert radiance from wavelength to wavenumber space.
-    This uses the approach described in:
-    Converting Advanced Himawari Imager (AHI) Radiance Units
-    Mathew Gunshor, 2015
-    https://cimss.ssec.wisc.edu/goes/calibration/Converting_AHI_RadianceUnits_24Feb2015.pdf
-
-    Inputs:
-     - the_scn: A satpy Scene containing the bands to convert.
-     - inbands: A list of the band names that require processing.
-    Returns:
-     - the_scn: Modified scene containing converted radiances.
-    """
-
-    det = 'det-1'
-
-    for chan in blist:
-        sat = the_scn[chan].attrs['platform_name']
-        sensor = the_scn[chan].attrs['sensor'].upper()
-
-        srf = RelativeSpectralResponse(sat, sensor)
-        cur_rsr = srf.rsr[chan]
-
-        wvl = cur_rsr[det]['wavelength']
-        wvn = np.flip(1e4 / cur_rsr[det]['wavelength'])
-        rsr = cur_rsr[det]['response']
-        h_wvn = (wvn[-1] - wvn[0]) / len(wvn)
-        h_wvl = (wvl[-1] - wvl[0]) / len(wvl)
-
-        int_wvn = (h_wvn / 2.) * (rsr[0] + 2 * np.sum(rsr[1:-1]) + rsr[-1])
-        int_wvl = (h_wvl / 2.) * (rsr[0] + 2 * np.sum(rsr[1:-1]) + rsr[-1])
-
-        the_scn[chan].data = 1000. * the_scn[chan].data * (int_wvl / int_wvn)
-
-    return the_scn
-
-
 def _get_band_solar(the_dict, bdict):
     """Compute the per-band solar irradiance for each loaded channel.
     Inputs:
@@ -175,8 +132,8 @@ def _get_band_solar(the_dict, bdict):
     irrad_dict = {}
 
     for band_name in bdict:
-        sensor = the_dict['VI1_RAD'].attrs['sensor']
-        platform = the_dict['VI1_RAD'].attrs['platform_name']
+        sensor = the_dict['sensor']
+        platform = the_dict['platform_name']
         srf = RelativeSpectralResponse(platform, sensor)
         cur_rsr = srf.rsr[bdict[band_name]]
         irrad = SiS().inband_solarirradiance(cur_rsr)
@@ -185,7 +142,7 @@ def _get_band_solar(the_dict, bdict):
     return irrad_dict
 
 
-def compute_fire_datasets(indata_dict, irrad_dict, bdict):
+def compute_fire_datasets(indata_dict, irrad_dict, bdict, ref_band):
     """Compute the intermediate datasets used for fire detection.
     Inputs:
     - indata_dict: A dictionary containing the input datasets.
@@ -195,64 +152,45 @@ def compute_fire_datasets(indata_dict, irrad_dict, bdict):
     - indata_dict: The input dictionary, with the computed datasets added.
     """
     indata_dict['BTD'] = indata_dict['MIR__BT'] - indata_dict['LW1__BT']
-    indata_dict['BTD'].attrs = indata_dict['MIR_RAD'].attrs
-    indata_dict['BTD'].attrs['name'] = 'BTD'
 
-    sat = indata_dict['LW1__BT'].attrs['platform_name']
-    sen = indata_dict['LW1__BT'].attrs['sensor']
+    sat = indata_dict['platform_name']
+    sen = indata_dict['sensor']
     det = 'det-1'
 
     rsr = RelativeSpectralResponse(sat, sen)
     cur_rsr = rsr.rsr[bdict['mir_band']]
     wvl_mir = cur_rsr[det]['central_wavelength']
 
-    exp_rad = calc_rad_fromtb(indata_dict['LW1__BT'].data, wvl_mir)
-    mir_diffrad = indata_dict['MIR_RAD'].data - exp_rad
+    exp_rad = calc_rad_fromtb(indata_dict['LW1__BT'], wvl_mir)
+    mir_diffrad = indata_dict['MIR_RAD'] - exp_rad
     mir_diffrad = np.where(np.isfinite(mir_diffrad), mir_diffrad, 0)
 
     mir_noir_name = 'MIR_RAD_NO_IR'
-    indata_dict[mir_noir_name] = indata_dict['MIR_RAD'].copy()
-    indata_dict[mir_noir_name].data = mir_diffrad
-    indata_dict[mir_noir_name].attrs = indata_dict['MIR_RAD'].attrs
-    indata_dict[mir_noir_name].attrs['name'] = mir_noir_name
+    indata_dict[mir_noir_name] = mir_diffrad
 
-    indata_dict['VI1_RAD'].data = indata_dict['VI1_RAD'].data * irrad_dict['mir_band'] / irrad_dict['vi1_band']
-    #indata_dict['VI2_RAD'].data = indata_dict['VI2_RAD'].data * irrad_dict['mir_band'] / irrad_dict['vi2_band']
-
-    #indata_dict['RAD_ADD'] = indata_dict[mir_noir_name] + indata_dict['VI1_RAD']
-    #indata_dict['RAD_ADD'] = indata_dict['RAD_ADD'] + indata_dict['VI2_RAD'].data
-    #indata_dict['RAD_ADD'].attrs = indata_dict['MIR_RAD'].attrs
-    #indata_dict['RAD_ADD'].attrs['name'] = 'RAD_ADD'
+    indata_dict['VI1_RAD'] = indata_dict['VI1_RAD'] * irrad_dict['mir_band'] / irrad_dict['vi1_band']
 
     indata_dict['VI1_DIFF'] = indata_dict[mir_noir_name] - indata_dict['VI1_RAD']
-    indata_dict['VI1_DIFF'].attrs = indata_dict['MIR_RAD'].attrs
-    indata_dict['VI1_DIFF'].attrs['name'] = 'VI1_DIFF'
 
-    indata_dict['mi_ndfi'] = indata_dict['MIR_RAD'].copy()
-    indata_dict['mi_ndfi'].attrs['name'] = 'mi_ndfi'
-    indata_dict['mi_ndfi'].data = (indata_dict['MIR__BT'].data - indata_dict['LW1__BT'].data) / (
-                indata_dict['MIR__BT'].data + indata_dict['LW1__BT'].data)
+    indata_dict['mi_ndfi'] = (indata_dict['MIR__BT'] - indata_dict['LW1__BT']) / (
+                              indata_dict['MIR__BT'] + indata_dict['LW1__BT'])
 
     # Get the angles associated with the Scene
-    indata_dict['SZA'], indata_dict['VZA'], indata_dict['pix_area'] = get_angles(indata_dict['LW1__BT'])
+    indata_dict['SZA'], indata_dict['VZA'], indata_dict['pix_area'] = get_angles(ref_band)
 
     # Compute the adjusted VI difference, with reduced daytime VIS component
     adj_vid = vid_adjust_sza(indata_dict['VI1_DIFF'], indata_dict['SZA'])
     adj_vid = xr.where(np.isfinite(adj_vid), adj_vid, 0)
-    indata_dict['VI1_DIFF_2'] = indata_dict['MIR_RAD'].copy()
-    indata_dict['VI1_DIFF_2'].attrs['name'] = 'mi_ndfi'
-    indata_dict['VI1_DIFF_2'].data = adj_vid
+    indata_dict['VI1_DIFF_2'] = adj_vid
 
     # Get the latitudes, which are needed for contextually filtering background pixels
-    lons, lats = indata_dict['MIR__BT'].attrs['area'].get_lonlats()
-    indata_dict['LATS'] = indata_dict['MIR__BT'].copy()
-    indata_dict['LATS'].attrs['name'] = 'LATS'
-    indata_dict['LATS'].data = lats.astype(np.float32)
+    lons, lats = ref_band.attrs['area'].get_lonlats_dask()
+    indata_dict['LATS'] = lats.astype(np.float32)
 
     final_bnames = ['VI1_RAD', 'MIR_RAD', 'LW1_RAD', 'MIR__BT', 'LW1__BT',
                     'MIR_RAD_NO_IR', 'VI1_DIFF', 'mi_ndfi', ]
     for band in final_bnames:
-        indata_dict[band].data = np.where(np.isfinite(indata_dict[band].data), indata_dict[band].data, np.nan)
+        indata_dict[band] = np.where(np.isfinite(indata_dict[band]), indata_dict[band], np.nan)
 
     return indata_dict
 
@@ -269,7 +207,7 @@ def get_aniso_diffs(vid_ds, niter_list):
 
     out_list = [vid_ds]
     for niter in niter_list:
-        out_list.append(aniso_diff(vid_ds.data, niter=niter, kappa=1))
+        out_list.append(aniso_diff(vid_ds, niter=niter, kappa=1))
 
     main_n = np.dstack(out_list)
     return np.nanstd(main_n, axis=2)
@@ -285,27 +223,20 @@ def get_angles(ref_data):
     - pix_area: The pixel area in km^2.
     """
     # Solar zenith
-    saa, sza_data = _get_sun_angles(ref_data)
-    sza = ref_data.copy()
-    sza.data = sza_data.data
-    sza.attrs['name'] = 'SZA'
+    saa, sza = _get_sun_angles(ref_data)
 
     # Satellite zenith
-    vza = ref_data.copy()
-    vza.data = get_satellite_zenith_angle(ref_data)
-    vza.attrs['name'] = 'VZA'
+    vza = get_satellite_zenith_angle(ref_data)
 
     # Compute the pixel area
     # Pixel sizes are in meters, convert to km
     pix_size = ref_data.attrs['area'].pixel_size_x * ref_data.attrs['area'].pixel_size_x * 1e-6
 
     # Multiply by inverse vza to gain estimate of pixel size across image.
-    pix_area = ref_data.copy()
-    pix_area.attrs['name'] = 'pix_area'
-    pix_area.data = pix_size / np.cos(np.deg2rad(vza))
+    pix_area = pix_size / np.cos(np.deg2rad(vza))
 
     # Return values, casting to float32 to save memory.
-    return sza.astype(np.float32), vza.astype(np.float32), pix_area.astype(np.float32)
+    return sza.data.astype(np.float32), vza.data.astype(np.float32), pix_area.data.astype(np.float32)
 
 
 def initial_load(infiles_l1,
@@ -336,11 +267,6 @@ def initial_load(infiles_l1,
     scnr = scn.resample(scn.coarsest_area(), resampler='native')
     scnr2 = scn2.resample(scn.coarsest_area(), resampler='native')
 
-   # for ds in scnr._datasets.keys():
-   #     scnr[ds] = scnr[ds].data.compute()
-   # for ds in scn2._datasets.keys():
-   #     scnr2[ds] r= scnr2[ds].data.compute()
-
     return sort_l1(scnr[bdict['vi1_band']],
                    scnr[bdict['mir_band']],
                    scnr[bdict['lwi_band']],
@@ -358,27 +284,29 @@ def sort_l1(vi1_raddata,
             bdict,
             do_load_lsm=True):
 
-    data_dict = {'VI1_RAD': vi1_raddata,
-              #   'VI2_RAD': vi2_raddata,
-                 'MIR_RAD': mir_raddata,
-                 'LW1_RAD': lw1_raddata,
-                 'MIR__BT': mir_btdata,
-                 'LW1__BT': lw1_btdata}
+    data_dict = {'VI1_RAD': vi1_raddata.data,
+                 'MIR_RAD': mir_raddata.data,
+                 'LW1_RAD': lw1_raddata.data,
+                 'MIR__BT': mir_btdata.data,
+                 'LW1__BT': lw1_btdata.data}
+
+    # Get common attributes
+    data_dict['platform_name'] = vi1_raddata.attrs['platform_name']
+    data_dict['sensor'] = vi1_raddata.attrs['sensor']
 
     # Compute the solar irradiance values
     irrad_dict = _get_band_solar(data_dict, bdict)
 
     # Compute the datasets required for fire detection.
-    data_dict = compute_fire_datasets(data_dict, irrad_dict, bdict)
+    data_dict = compute_fire_datasets(data_dict, irrad_dict, bdict, lw1_raddata)
 
     # Lastly, load the land-sea mask
     if do_load_lsm:
-        data_dict['LSM'] = load_lsm(data_dict['BTD'])
+        data_dict['LSM'] = load_lsm(vi1_raddata)
     else:
-        data_dict['LSM'] = data_dict['BTD'].copy()
-        data_dict['LSM'].attrs['name'] = 'Land/Sea Mask'
-        data_dict['LSM'].data[:, :] = PYFc.lsm_land_val
-        data_dict['LSM'].data = data_dict['LSM'].data.astype(np.uint8)
+        lsm = dask.array.zeros_like(vi1_raddata)
+        lsm[:,:] = PYFc.lsm_land_val
+        data_dict['LSM'] = lsm.astype(np.uint8)
 
     return data_dict
 
@@ -430,15 +358,13 @@ def load_lsm(ds, xy_bbox=None, ll_bbox=None):
 
     # Set up some attributes
     lsm_data = iscn['image']
-    lsm_data.attrs = ds.attrs
-    lsm_data.attrs['name'] = 'Land-Sea mask'
 
     # The LSM is often loaded with differing chunk sizes to the input data, so rechunk to match.
     lsm_data.data = lsm_data.data.rechunk(ds.data.chunks)
     lsm_data.coords['x'] = ds.coords['x']
     lsm_data.coords['y'] = ds.coords['y']
 
-    return lsm_data
+    return lsm_data.data
 
 
 def comp_stat(x, a, b):
@@ -518,14 +444,11 @@ def calc_frp(data_dict):
      - data_dict: Updated dict now also containing the FRP estimates.
     """
 
-    a_val = PYFc.rad_to_bt_dict[data_dict['pix_area'].attrs['platform_name']]
+    a_val = PYFc.rad_to_bt_dict[data_dict['platform_name']]
     frp_est = (data_dict['pix_area'] * PYFc.sigma / a_val) * (data_dict['MIR__BT'] - data_dict['mean_mir'])
     frp_est = xr.where(data_dict['mean_mir'] > 0, frp_est, 0)
     frp_est = xr.where(data_dict['fire_dets'] > 0, frp_est, 0)
 
-    data_dict['frp_est'] = data_dict['LW1__BT'].copy()
-    data_dict['frp_est'].attrs['name'] = 'frp_estimate'
-    data_dict['frp_est'].attrs['units'] = 'MW'
-    data_dict['frp_est'].data = frp_est
+    data_dict['frp_est'] = frp_est
 
     return data_dict

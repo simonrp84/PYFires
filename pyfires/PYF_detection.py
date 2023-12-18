@@ -118,7 +118,7 @@ def do_apply_stg1b_kern2(in_variable, ksize):
     - out_std: The standard deviation of the convolved dataset.
     """
 
-    out_ker = convolve(in_variable.data, _make_kern(ksize))
+    out_ker = convolve(in_variable, _make_kern(ksize))
     out_std = da.nanstd(out_ker)
 
     return out_ker, out_std
@@ -149,8 +149,6 @@ def stage1_tests(in_mir,
     - A boolean mask with True for pixels that pass the tests
     """
 
-    from pyfires.PYF_basic import save_output
-
     btd_kern_thr = kern_thresh_btd + kern_thresh_sza_adj * in_sza
 
     mir_thresh, btd_thresh = set_initial_thresholds(in_sza)
@@ -172,9 +170,7 @@ def stage1_tests(in_mir,
     # Only select pixels with positive MIR radiance after VIS and IR subtractions.
     main_testarr = xr.where(in_vid >= 0, main_testarr, 0)
 
-    pfp_arr = in_sza.copy()
-    pfp_arr.attrs['name'] = 'potential_fire_pixels'
-    pfp_arr.data = xr.where(main_testarr >= PYFc.stage1_pass_thresh, 1, 0).astype(np.uint8)
+    pfp_arr = xr.where(main_testarr >= PYFc.stage1_pass_thresh, 1, 0).astype(np.uint8)
 
     # Return only those pixels meeting test threshold
     return pfp_arr
@@ -201,8 +197,8 @@ def compute_background_rad(indata,
     cum_sum = 0
 
     # Select only night pixels
-    tmp = indata.data.ravel()
-    tmp = tmp[insza.data.ravel() > sza_thr]
+    tmp = indata.ravel()
+    tmp = tmp[insza.ravel() > sza_thr]
     # Select only valid radiance values
     tmp = tmp[tmp > 0]
 
@@ -262,22 +258,22 @@ def run_basic_night_detection(in_vi2_rad,
 
     # Compute the definite nighttime detections
     def_dets = (in_vi2_rad > opts['def_fire_rad_vis']).astype(np.uint8)
-    def_dets.data = xr.where(in_vid > opts['def_fire_rad_vid'], def_dets.data, 0)
-    def_dets.data = xr.where(in_sza > opts['sza_thresh'], def_dets.data, 0)
+    def_dets = xr.where(in_vid > opts['def_fire_rad_vid'], def_dets, 0)
+    def_dets = xr.where(in_sza > opts['sza_thresh'], def_dets, 0)
 
     # Select only pixels with a bright VIS radiance
     out_dets = (in_vi2_rad > thr_vis * 2).astype(np.uint8)
     # Select only pixels with a suitable VISDIFF radiance
-    out_dets.data = xr.where(in_vid > opts['vid_thresh'], out_dets.data, 0)
+    out_dets = xr.where(in_vid > opts['vid_thresh'], out_dets, 0)
     # Exclude pixels that were not selected as potential fire pixels by the Roberts + Wooster tests
-    out_dets.data = xr.where(in_pfp == 1, out_dets.data, 0)
+    out_dets = xr.where(in_pfp == 1, out_dets, 0)
 
     # Sometimes, hot VIS pixels are mistaken as fire. Here we attempt to exclude those pixels
     # by ensuring that the candidate has the highest VID in a 3x3 window.
     # Get sum in 3x3 window
-    det_sum = convolve(out_dets.data, np.ones((3, 3)))
+    det_sum = convolve(out_dets, np.ones((3, 3)))
     # Get max in 3x3 window
-    det_max = maximum_filter(in_vid.data, (3, 3))
+    det_max = maximum_filter(in_vid, (3, 3))
 
     det_pos = xr.where(det_sum == 1, in_vid, 0)
     det_pos = xr.where(det_pos == det_max, 1, 0).astype(np.uint8)
@@ -297,6 +293,7 @@ def run_basic_night_detection(in_vi2_rad,
 def run_dets(data_dict):
 
     # Select potential fire pixels using the Roberts + Wooster Stage 1 + 2 tests
+
     data_dict['PFP'] = stage1_tests(data_dict['MIR__BT'],
                                     data_dict['BTD'],
                                     data_dict['VI1_DIFF'],
@@ -307,15 +304,15 @@ def run_dets(data_dict):
 
     # For the potential fire pixels previously defined, compute the per-pixel windows stats
     wrap_get_mean_std = dask.delayed(get_mea_std_window)
-    outa = wrap_get_mean_std(data_dict['PFP'].data,
-                             data_dict['VI1_RAD'].data,  # VIS chan
-                             data_dict['mi_ndfi'].data,  # NDFI
-                             data_dict['LW1__BT'].data,  # LW Brightness Temperature
-                             data_dict['BTD'].data,  # MIR-LW BTD
-                             data_dict['MIR__BT'].data,  # MIR BT
-                             data_dict['VI1_DIFF'].data,  # MIR-LWIR-VIS radiance diff
-                             data_dict['LSM'].data,  # The land-sea mask
-                             data_dict['LATS'].data,  # The pixel longitudes
+    outa = wrap_get_mean_std(data_dict['PFP'],
+                             data_dict['VI1_RAD'],  # VIS chan
+                             data_dict['mi_ndfi'],  # NDFI
+                             data_dict['LW1__BT'],  # LW Brightness Temperature
+                             data_dict['BTD'],  # MIR-LW BTD
+                             data_dict['MIR__BT'],  # MIR BT
+                             data_dict['VI1_DIFF'],  # MIR-LWIR-VIS radiance diff
+                             data_dict['LSM'],  # The land-sea mask
+                             data_dict['LATS'],  # The pixel latitudes
                              255,  # The value denoting land in the LSM. If 255, ignore mask
                              25)
 
@@ -365,8 +362,9 @@ def run_dets(data_dict):
     main_det_arr = main_det_arr * (mir_bt_stdm > 1.5)
 
     kern = np.ones((3, 3))
-    fir_d_sum = convolve(main_det_arr.data, kern)
-    local_max = maximum_filter(data_dict['VI1_DIFF'].data, (3, 3))
+
+    fir_d_sum = convolve(main_det_arr, kern)
+    local_max = maximum_filter(data_dict['VI1_DIFF'], (3, 3))
     tmp_out = (fir_d_sum == 1) * (data_dict['VI1_DIFF'] == local_max)
 
     main_out = main_det_arr * (fir_d_sum > 1) + tmp_out * main_det_arr
@@ -375,8 +373,8 @@ def run_dets(data_dict):
     main_out = main_out * xr.where(data_dict['BTD'] > mean_btd + 2.5, main_out, 0)
     main_out = main_out * xr.where(data_dict['BTD'] > mean_btd + 2 * std_btd, main_out, 0)
 
-    fir_d_sum = convolve(main_out.data, kern)
-    local_max = maximum_filter(data_dict['MIR__BT'].data, (3, 3))
+    fir_d_sum = convolve(main_out, kern)
+    local_max = maximum_filter(data_dict['MIR__BT'], (3, 3))
     tmp_out = (fir_d_sum == 1) * (data_dict['MIR__BT'] == local_max)
     main_out = main_out * (fir_d_sum > 1) + main_out * tmp_out
 
@@ -392,18 +390,18 @@ def run_dets(data_dict):
                      [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
                      [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5]]) / 5
 
-    resx = np.abs(convolve(data_dict['MIR__BT'].data, kern))
+    resx = np.abs(convolve(data_dict['MIR__BT'], kern))
     kern = kern.T
-    resy = np.abs(convolve(data_dict['MIR__BT'].data, kern))
+    resy = np.abs(convolve(data_dict['MIR__BT'], kern))
     res = np.sqrt(resx * resx + resy * resy)
     main_out = main_out * (res < 500)
 
 
     delayed_local_stats = dask.delayed(get_local_stats)
-    locarr = delayed_local_stats(main_out.data,
-                                 data_dict['MIR__BT'].data,
-                                 data_dict['BTD'].data,
-                                 data_dict['VI1_DIFF'].data)
+    locarr = delayed_local_stats(main_out,
+                                 data_dict['MIR__BT'],
+                                 data_dict['BTD'],
+                                 data_dict['VI1_DIFF'])
     locarrn = dask.array.from_delayed(locarr,
                                       shape=(data_dict['BTD'].shape[0], data_dict['BTD'].shape[1], 3),
                                       dtype=np.single)
@@ -415,14 +413,14 @@ def run_dets(data_dict):
     main_out = main_out * (data_dict['BTD'] > mean_btd + std_mir + std_btd)
 
     kern = np.ones((3, 3))
-    fir_d_sum = convolve(main_out.data, kern)
-    local_max = maximum_filter(data_dict['VI1_DIFF'].data, (3, 3))
+    fir_d_sum = convolve(main_out, kern)
+    local_max = maximum_filter(data_dict['VI1_DIFF'], (3, 3))
     out5 = (fir_d_sum == 1) * (data_dict['VI1_DIFF'] == local_max)
     main_out = main_out * (fir_d_sum > 1) + out5 * main_out
 
     kern_ones = np.ones((3, 3))
-    fir_d_sum = convolve(main_out.data, kern_ones)
-    local_max = maximum_filter(data_dict['MIR__BT'].data, (3, 3))
+    fir_d_sum = convolve(main_out, kern_ones)
+    local_max = maximum_filter(data_dict['MIR__BT'], (3, 3))
     out5 = (fir_d_sum == 1) * (data_dict['MIR__BT'] == local_max)
     main_out = main_out * (fir_d_sum > 1) + out5 * main_out
 
@@ -435,7 +433,7 @@ def run_dets(data_dict):
     main_out_tmp = main_out + xr.where(data_dict['MIR__BT'] > mir_abs_thresh, 1, 0).astype(np.uint8)
     main_out_tmp = xr.where(main_out_tmp > 0, 1, 0).astype(np.uint8)
 
-    fir_d_sum = convolve(main_out_tmp.data, kern_ones)
+    fir_d_sum = convolve(main_out_tmp, kern_ones)
 
     # Threshold for adding missing fire pixels, as the algorithm removes some pixels adjacent to existing detections
     # We add back using the BTD weighted by the number of fire pixels adjacent to the candidate.
@@ -452,10 +450,7 @@ def run_dets(data_dict):
     data_dict['mean_btd'] = mean_btd
     data_dict['std_btd'] = std_btd
 
-    data_dict['fire_dets'] = data_dict['LW1__BT'].copy()
-    data_dict['fire_dets'].attrs['name'] = 'fire_dets'
-    data_dict['fire_dets'].attrs['units'] = ''
-    data_dict['fire_dets'].data = main_out
+    data_dict['fire_dets'] = main_out
 
     data_dict = calc_frp(data_dict)
 

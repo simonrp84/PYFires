@@ -74,7 +74,6 @@ cdef _get_local_stats(unsigned char[:,:] proc_pix,
 
     for xpos in range(1, scn_width - 1):
         for ypos in range(1, scn_height - 1):
-            #print(xpos, ypos)
             # If current pixel is not a fire candidate, skip
             if proc_pix[xpos, ypos] == 0:
                 continue
@@ -181,6 +180,14 @@ cdef get_curwindow_pos(int xpos, int ypos, int winsize, int scn_width, int scn_h
         shape_sel[0] = -999
     elif shape_sel[1] >= scn_height:
         shape_sel[0] = -999
+    if shape_sel[2] < 0:
+        shape_sel[0] = -999
+    elif shape_sel[2] >= scn_width:
+        shape_sel[0] = -999
+    if shape_sel[3] < 0:
+        shape_sel[0] = -999
+    elif shape_sel[3] >= scn_height:
+        shape_sel[0] = -999
 
     return shape_sel
 
@@ -206,8 +213,8 @@ cdef get_window_mea_stdv(int winsize,
                          float btd_max_thresh = 7,
                          float lwi_min_thresh = 263.,
                          ):
-    cdef int arrsize = winsize + winsize + 1
-    cdef int npix = arrsize * arrsize
+    cdef int arrsize_x = winsize + winsize + 1
+    cdef int arrsize_y = winsize + winsize + 1
     cdef int i = 0
     cdef int j = 0
 
@@ -246,10 +253,17 @@ cdef get_window_mea_stdv(int winsize,
     cdef int n_wat = 0
     cdef int n_cld = 0
 
+    if arrsize_x > cur__lwi.shape[0]:
+        arrsize_x = cur__lwi.shape[0]
+
+    if arrsize_y > cur__lwi.shape[1]:
+        arrsize_y = cur__lwi.shape[1]
+
+    cdef int npix = arrsize_x * arrsize_y
 
     # Loop to find mean
-    for i in range(0, arrsize):
-        for j in range(0, arrsize):
+    for i in range(0, arrsize_x):
+        for j in range(0, arrsize_y):
             if i >= winsize - 1 and i <= winsize + 1 and j >= winsize - 1 and j <= winsize + 1:
                 continue
             if cur__lwi[i,j] < lwi_min_thresh or isnan(cur__lwi[i, j]):
@@ -279,8 +293,8 @@ cdef get_window_mea_stdv(int winsize,
 
     cdef int cur_n = 0
 
-    for i in range(0, arrsize):
-        for j in range(0, arrsize):
+    for i in range(0, arrsize_x):
+        for j in range(0, arrsize_y):
             if i >= winsize - 1 and i <= winsize + 1 and j >= winsize - 1 and j <= winsize + 1:
                 continue
             if cur__mir[i,j] > cen__mir or isnan(cur__mir[i, j]):
@@ -327,6 +341,13 @@ cdef get_window_mea_stdv(int winsize,
             mea_val_mir = mainmed_mir[n_good / 2]
             mea_val_vid = mainmed_vid[n_good / 2]
 
+    free(mainmed_mir)
+    free(mainmed_btd)
+    free(mainmed_lwi)
+    free(mainmed_vi)
+    free(mainmed_vid)
+    free(mainmed_nd)
+
      # Loop to find standard deviation
     sum_val_vi = 0
     sum_val_nd = 0
@@ -334,8 +355,8 @@ cdef get_window_mea_stdv(int winsize,
     sum_val_btd = 0
     sum_val_mir = 0
     sum_val_vid = 0
-    for i in range(0, arrsize):
-        for j in range(0, arrsize):
+    for i in range(0, arrsize_x):
+        for j in range(0, arrsize_y):
             if i >= winsize - 1 and i <= winsize + 1 and j >= winsize - 1 and j <= winsize + 1:
                 continue
             if cur__mir[i,j] > cen__mir or isnan(cur__mir[i, j]):
@@ -467,7 +488,6 @@ def get_mea_std_window(unsigned char[:,:] pfp_data,
                                           cen_btd,
                                           cen_lon,
                                           lsm_land_val)
-                #print(f'{res[0]:4.4f} {res[1]:4.4f} {res[2]:4.4f} {res[3]:4.4f} {res[4]:4.4f} {res[5]:4.4f}{res[6]:4.4f} {res[7]:4.4f} {res[8]:4.4f} {res[9]:4.4f} {res[10]:4.4f} {res[11]:4.4f} {res[12]:4.4f} {res[13]:4.4f} {res[14]:4.4f} {res[15]:4.4f}')
                 if (res[0] > perc_thresh) or (res[0] * res[1]) > n_thresh:
                     break
 

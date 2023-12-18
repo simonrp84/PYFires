@@ -82,5 +82,6 @@ if __name__ == "__main__":
     for curinf in tqdm(curfiles):
         with Profiler() as prof, ResourceProfiler(dt=0.25) as rprof:
             fire_dets, frp_est = main(curinf, odir)
+            frp_est = np.array(frp_est)
         visualize([prof, rprof], show=False, save=True, filename=odir + "../frp_vis.html")
         break
