@@ -195,6 +195,40 @@ def compute_fire_datasets(indata_dict, irrad_dict, bdict, ref_band):
     return indata_dict
 
 
+def py_aniso(in_img,
+             niter=5,
+             kappa=20,
+             gamma=0.2):
+    """A Python implementation of the anisotropic diffusion of a pixel.
+    Inputs:
+    - in_img: The input image to work on (float32 array)
+    - niter: The number of iterations to perform
+    - kappa: The conduction coefficient
+    - gamma: The step value, suggested maximum is 0.25
+    - step_x: The step distance between pixels on x axis
+    - step_y: The step distance between pixels on y axis
+    Returns:
+    - img_diff: The diffused image (float32 array)
+    """
+    import numpy as np
+
+    pxv = np.zeros_like(in_img)
+    nxv = np.zeros_like(in_img)
+    pyv = np.zeros_like(in_img)
+    nyv = np.zeros_like(in_img)
+
+    pxv[1:-1, :] = np.abs(in_img[2:, :] - in_img[1:-1, :])
+    nxv[1:-1, :] = np.abs(in_img[0:-2, :] - in_img[1:-1, :])
+    pyv[:, 1:-1] = np.abs(in_img[:, 2:] - in_img[:, 1:-1])
+    nyv[:, 1:-1] = np.abs(in_img[:, 0:-2] - in_img[:, 1:-1])
+
+    pxc = np.exp(-np.power(pxv, 2))
+    nxc = np.exp(-np.power(nxv, 2))
+    pyc = np.exp(-np.power(pyv, 2))
+    nyc = np.exp(-np.power(nyv, 2))
+
+    return in_img + gamma * (pxv * pxc + nxv * nxc + pyv * pyc + nyv * nyc)
+
 def get_aniso_diffs(vid_ds, niter_list):
     """Get the standard deviation in anisotropic diffusion of the VI Difference data.
     Inputs:
@@ -203,11 +237,10 @@ def get_aniso_diffs(vid_ds, niter_list):
     Returns:
      - out_ds: The anisotropic diffusion of the VI Difference data.
     """
-    from pyfires.PYF_Anisotropy import aniso_diff
 
     out_list = [vid_ds]
     for niter in niter_list:
-        out_list.append(aniso_diff(vid_ds, niter=niter, kappa=1))
+        out_list.append(py_aniso(vid_ds, niter=niter, kappa=1))
 
     main_n = np.dstack(out_list)
     return np.nanstd(main_n, axis=2)

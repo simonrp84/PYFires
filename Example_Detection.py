@@ -36,7 +36,7 @@ satpy.config.set({'cache_lonlats': True})
 
 # Final imports
 from pyfires.PYF_basic import initial_load, save_output
-from pyfires.PYF_detection import run_dets
+from pyfires.PYF_detection import run_dets, stage1_tests
 from satpy import Scene
 from tqdm import tqdm
 from glob import glob
@@ -57,10 +57,10 @@ def main():
     output_img_dir = 'D:/sat_data/ahi_main/out/'
 
     # Set an X-Y bounding box for cropping the input data.
-    bbox = (-1600000, -2770000, 690000, -1040000)
+    bbox = None#(-1600000, -2770000, 690000, -1040000)
 
     # Search for input timeslots.
-    idirs = glob(f'{input_file_dir}/*')
+    idirs = glob(f'{input_file_dir}/*1110*')
     idirs.sort()
 
     # Set up a dictionary mapping band type names to the AHI channel names.
@@ -94,12 +94,13 @@ def main():
         dtstr = curf[pos+7:pos+7+13]
 
         # Set output filename
-        outf1 = f'{output_img_dir}/fire_dets_{dtstr}00.tif'
-        outf2 = f'{output_img_dir}/fire_radiative_power_{dtstr}00.tif'
+        outf1 = f'{output_img_dir}/pfp_{dtstr}00.tif'
+        outf2 = f'{output_img_dir}/t1_{dtstr}00.tif'
+        outf3 = f'{output_img_dir}/t2_{dtstr}00.tif'
 
         # Skip files we've already processed
-        if not os.path.isfile(outf1) and not os.path.isfile(outf2):
-
+        #if not os.path.isfile(outf1) and not os.path.isfile(outf2):
+        if True:
             # Load the initial data.
             # Here we don't load the land/sea mask as we're cropping and this is
             # not (yet) supported by pyfires. For full disk processing you will
@@ -107,19 +108,30 @@ def main():
             data_dict = initial_load(ifiles_l15,        # Input file list
                                      'ahi_hsd',         # Satpy reader name
                                      bdict,             # Band mapping dict
-                                     do_load_lsm=False, # Don't load land-sea mask
+                                     do_load_lsm=True, # Don't load land-sea mask
                                      bbox=bbox)         # Bounding box for cropping
+
+            data_dict['PFP'] = stage1_tests(data_dict['MIR__BT'],
+                                            data_dict['BTD'],
+                                            data_dict['VI1_DIFF'],
+                                            data_dict['SZA'],
+                                            data_dict['LSM'],
+                                            ksizes=[5, 7, 9],
+                                            do_lsm_mask=True)
 
             # Run the detection algorithm. This returns a boolean mask of the
             # fire detections as well as the actual fire radiative power data.
-            fire_dets, frp_data = run_dets(data_dict)
+            #fire_dets, frp_data = run_dets(data_dict)
            # save_output(scn, fire_dets, 'fire_dets', outf1, ref='B07')
-            save_output(scn, frp_data, 'fire_dets', outf2, ref='B07')
+            #save_output(scn, frp_data, 'fire_dets', outf2, ref='B07')
+            save_output(scn, data_dict['PFP'], 'BTD', outf1, ref='B07')
+            #save_output(scn, dd['t1'], 'VI1_DIFF', outf2, ref='B07')
+            #save_output(scn, dd['t2'], 'MIR__BT', outf3, ref='B07')
 
         en = datetime.utcnow()
 
         print((en-st).total_seconds())
-        break
+        #break
 
 
 if __name__ == "__main__":

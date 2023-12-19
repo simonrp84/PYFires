@@ -29,6 +29,17 @@ import xarray as xr
 import dask
 
 
+def _make_gkern(ksize=5, sig=1.):
+    """
+    creates gaussian kernel with side length `l` and a sigma of `sig`
+    From: https://stackoverflow.com/a/43346070/5169272
+    """
+    ax = np.linspace(-(ksize - 1) / 2., (ksize - 1) / 2., ksize)
+    gauss = np.exp(-0.5 * np.square(ax) / np.square(sig))
+    kernel = np.outer(gauss, gauss)
+    return kernel / np.sum(kernel)
+
+
 def _make_kern(ksize):
     """Make a high pass kernel of given size.
     Inputs:
@@ -117,7 +128,6 @@ def do_apply_stg1b_kern2(in_variable, ksize):
     - out_ker: The convolved dataset.
     - out_std: The standard deviation of the convolved dataset.
     """
-
     out_ker = convolve(in_variable, _make_kern(ksize))
     out_std = da.nanstd(out_ker)
 
@@ -155,22 +165,24 @@ def stage1_tests(in_mir,
     main_testarr = da.zeros_like(in_mir)
 
     # This is stage 1b, applied before 1a to simplify processing.
+
     for ksize in ksizes:
         kerval, stdval = do_apply_stg1b_kern2(in_btd, ksize)
         tmpdata = xr.where(kerval >= stdval * btd_kern_thr, 1, 0)
-        main_testarr = xr.where(tmpdata > 0, main_testarr + 1, main_testarr)
+        main_testarr = xr.where(tmpdata > 0, 1, main_testarr)
 
-    main_testarr = xr.where(in_mir >= mir_thresh, main_testarr + 1, 0)
-    main_testarr = xr.where(in_btd >= btd_thresh, main_testarr + 1, 0)
+    main_testarr = xr.where(in_mir >= mir_thresh, main_testarr, 0)
+    main_testarr = xr.where(in_btd >= btd_thresh, main_testarr, 0)
 
     # Apply land-sea mask
     if do_lsm_mask:
         main_testarr = xr.where(in_lsm == lsm_land_val, main_testarr, 0)
 
     # Only select pixels with positive MIR radiance after VIS and IR subtractions.
-    main_testarr = xr.where(in_vid >= 0, main_testarr, 0)
+    pfp_arr = xr.where(in_vid >= 0, main_testarr, 0).astype(np.uint8)
 
-    pfp_arr = xr.where(main_testarr >= PYFc.stage1_pass_thresh, 1, 0).astype(np.uint8)
+    #pfp_arr = xr.where(main_testarr >= PYFc.stage1_pass_thresh, 1, 0).astype(np.uint8)
+
 
     # Return only those pixels meeting test threshold
     return pfp_arr
