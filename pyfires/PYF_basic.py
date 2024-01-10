@@ -22,6 +22,7 @@ import dask.array
 from satpy.modifiers.angles import get_satellite_zenith_angle
 from dask_image.ndfilters import convolve
 import pyfires.PYF_Consts as PYFc
+from numba import njit, prange, jit
 from satpy import Scene
 
 from pyspectral.rsr_reader import RelativeSpectralResponse
@@ -31,16 +32,51 @@ import numpy as np
 import dask
 
 
-def vid_adjust_sza(in_vid, in_sza, sza_adj=82, min_v=0.04, max_v=0.115, slo_str=1.8, slo_rise=0.2):
+def set_default_values(indict):
+    """Set the default threshold, kernel and multiplier values for the fire detection."""
+    indict['min_wsize'] = PYFc.min_win_size  # Minimum window size for windowed statistics
+    indict['max_wsize'] = PYFc.max_win_size  # Maximum window size for windowed statistics
+    indict['perc_thresh'] = PYFc.win_frac  # Percentage of good pixels in window for stats to be selected
+    indict['lsm_val'] = PYFc.lsm_land_val  # Land-sea mask value for land
+    indict['aniso_thresh'] = PYFc.aniso_thresh   # Anisotropy threshold for anisotropic diffusion test
+    indict['vid2_thresh'] = PYFc.vid2_thresh  # Threshold for MIR - VIS - LWIR test
+    indict['ksizes'] = PYFc.ksizes   # Kernel sizes for stage 1 tests
+    indict['vid_stdm_mult'] = PYFc.vid_std_mult   # Multiplier factor for the VID radiance threshold
+    indict['mir_stdm_mult'] = PYFc.mir_std_mult   # Multiplier factor for the MIR radiance threshold
+    indict['kern_test_size'] = PYFc.kern_test_size    # Kernel size for the second stage kernel tests
+    indict['iter_list'] = PYFc.aniso_iters  # Number of anisotropic diffusion iterations to perform
+    indict['kern_thresh_btd'] = PYFc.kern_thresh_btd  # Threshold for the BTD kernel test
+    indict['kern_thresh_sza_adj'] = PYFc.kern_thresh_sza_adj # Threshold for the BTD kernel test
+    indict['btddif_thresh'] = PYFc.btddif_thresh  # Threshold for the BTD difference test
+    indict['viddif_thresh'] = PYFc.viddif_thresh  # Threshold for the VID difference test
+    indict['mir_abs_thresh'] = PYFc.mir_abs_thresh  # Threshold for the MIR absolute test
+    indict['min_btd_addback'] = PYFc.min_btd_addback  # Minimum BTD value for addback test
+    indict['max_btd_addback'] = PYFc.max_btd_addback  # Maximum BTD value for addback test
+    indict['main_perc_thresh'] = PYFc.main_perc_thresh  # Percentage threshold for main pixel window
+    indict['sza_adj'] = PYFc.sza_adj  # The SZA threshold at which adjustment begins. Default value: 82 degrees.
+    indict['sza_min_v'] = PYFc.sza_min_v  # The minimum VID value, used during day.
+    indict['sza_max_v'] = PYFc.sza_max_v  # The maximum VID value, used at night.
+    indict['sza_slo_str'] = PYFc.sza_slo_str  # The slope strength.
+    indict['sza_slo_rise'] = PYFc.sza_slo_rise  # The slope rise.
+
+    return indict
+
+
+def vid_adjust_sza(in_vid, in_sza,
+                   sza_adj=PYFc.sza_adj,
+                   min_v=PYFc.sza_min_v,
+                   max_v=PYFc.sza_max_v,
+                   slo_str=PYFc.sza_slo_str,
+                   slo_rise=PYFc.sza_slo_rise ):
     """Adjust the VI Difference based on solar zenith angle.
     Inputs:
     - in_vid: The VI Difference data
     - in_sza: The solar zenith angle in degrees
-    - sza_adj: The SZA threshold at which adjustment begins. Default value: 82 degrees.
-    - min_v: The minimum VID value, used during day. Default value: 0.04
-    - max_v: The maximum VID value, used at night. Default value: 0.115
-    - slo_str: The slope strength. Default value: 1.8
-    - slo_rise: The slope rise. Default value: 0.2
+    - sza_adj: The SZA threshold at which adjustment begins.
+    - min_v: The minimum VID value, used during day.
+    - max_v: The maximum VID value, used at night.
+    - slo_str: The slope strength.
+    - slo_rise: The slope rise.
     Returns:
     - adj_vid: The adjusted VI Difference data
      """
@@ -186,16 +222,20 @@ def compute_fire_datasets(indata_dict, irrad_dict, bdict, ref_band):
     # Get the latitudes, which are needed for contextually filtering background pixels
     lons, lats = ref_band.attrs['area'].get_lonlats_dask()
     indata_dict['LATS'] = lats.astype(np.float32)
+    indata_dict['LATS'] = indata_dict['LATS'].rechunk(chunks=ref_band.chunks)
+
 
     final_bnames = ['VI1_RAD', 'MIR_RAD', 'LW1_RAD', 'MIR__BT', 'LW1__BT',
-                    'MIR_RAD_NO_IR', 'VI1_DIFF', 'mi_ndfi', ]
-    for band in final_bnames:
+                    'MIR_RAD_NO_IR', 'VI1_DIFF', 'mi_ndfi']
+
+    for bnum in prange(len(final_bnames)):
+        band = final_bnames[bnum]
         indata_dict[band] = np.where(np.isfinite(indata_dict[band]), indata_dict[band], np.nan)
 
     return indata_dict
 
 
-def py_aniso(in_img,
+def py_aniso(in_img, pxv, nxv, pyv, nyv,
              niter=5,
              kappa=20,
              gamma=0.2):
@@ -205,29 +245,29 @@ def py_aniso(in_img,
     - niter: The number of iterations to perform
     - kappa: The conduction coefficient
     - gamma: The step value, suggested maximum is 0.25
-    - step_x: The step distance between pixels on x axis
-    - step_y: The step distance between pixels on y axis
     Returns:
     - img_diff: The diffused image (float32 array)
     """
-    import numpy as np
 
-    pxv = np.zeros_like(in_img)
-    nxv = np.zeros_like(in_img)
-    pyv = np.zeros_like(in_img)
-    nyv = np.zeros_like(in_img)
+    out_img = np.zeros_like(in_img)
+    out_img[:, :] = in_img[:, :]
 
-    pxv[1:-1, :] = np.abs(in_img[2:, :] - in_img[1:-1, :])
-    nxv[1:-1, :] = np.abs(in_img[0:-2, :] - in_img[1:-1, :])
-    pyv[:, 1:-1] = np.abs(in_img[:, 2:] - in_img[:, 1:-1])
-    nyv[:, 1:-1] = np.abs(in_img[:, 0:-2] - in_img[:, 1:-1])
+    for ii in range(0, niter):
 
-    pxc = np.exp(-np.power(pxv, 2))
-    nxc = np.exp(-np.power(nxv, 2))
-    pyc = np.exp(-np.power(pyv, 2))
-    nyc = np.exp(-np.power(nyv, 2))
+        pxv[1:-1, :] = np.abs(out_img[2:, :] - out_img[1:-1, :])
+        nxv[1:-1, :] = np.abs(out_img[0:-2, :] - out_img[1:-1, :])
+        pyv[:, 1:-1] = np.abs(out_img[:, 2:] - out_img[:, 1:-1])
+        nyv[:, 1:-1] = np.abs(out_img[:, 0:-2] - out_img[:, 1:-1])
 
-    return in_img + gamma * (pxv * pxc + nxv * nxc + pyv * pyc + nyv * nyc)
+        pxv = pxv * np.exp(-pxv**2 / kappa**2)
+        nxv = nxv * np.exp(-nxv**2 / kappa**2)
+        pyv = pyv * np.exp(-pyv**2 / kappa**2)
+        nyv = nyv * np.exp(-nyv**2 / kappa**2)
+
+        out_img = out_img + gamma * (pxv + nxv + pyv + nyv)
+
+    return out_img
+
 
 def get_aniso_diffs(vid_ds, niter_list):
     """Get the standard deviation in anisotropic diffusion of the VI Difference data.
@@ -238,9 +278,42 @@ def get_aniso_diffs(vid_ds, niter_list):
      - out_ds: The anisotropic diffusion of the VI Difference data.
     """
 
-    out_list = [vid_ds]
-    for niter in niter_list:
-        out_list.append(py_aniso(vid_ds, niter=niter, kappa=1))
+    out_list = [None]*(len(niter_list)+1)
+    out_list[0] = vid_ds
+
+    pxv = np.zeros_like(vid_ds)
+    nxv = np.zeros_like(vid_ds)
+    pyv = np.zeros_like(vid_ds)
+    nyv = np.zeros_like(vid_ds)
+
+    for niter in range(0, len(niter_list)):
+        out_list[niter+1] = py_aniso(out_list[niter], pxv, nxv, pyv, nyv,
+                                     niter=niter_list[niter] - niter_list[niter-1],
+                                     kappa=1)
+
+    main_n = np.dstack(out_list)
+    return np.nanstd(main_n, axis=2)
+
+
+def get_aniso_diffs_bk(vid_ds, niter_list):
+    """Get the standard deviation in anisotropic diffusion of the VI Difference data.
+    Inputs:
+    - vid_ds: The VI Difference data.
+    - niter_list: A list of the number of iterations to perform.
+    Returns:
+     - out_ds: The anisotropic diffusion of the VI Difference data.
+    """
+
+    out_list = [None] * (len(niter_list) + 1)
+    out_list[0] = vid_ds
+
+    pxv = np.zeros_like(vid_ds)
+    nxv = np.zeros_like(vid_ds)
+    pyv = np.zeros_like(vid_ds)
+    nyv = np.zeros_like(vid_ds)
+
+    for niter in prange(0, len(niter_list)):
+        out_list[niter+1] = py_aniso(vid_ds, pxv, nxv, pyv, nyv, niter=niter_list[niter], kappa=1)
 
     main_n = np.dstack(out_list)
     return np.nanstd(main_n, axis=2)

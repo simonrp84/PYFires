@@ -35,8 +35,9 @@ satpy.config.set({'cache_sensor_angles': False})
 satpy.config.set({'cache_lonlats': True})
 
 # Final imports
-from pyfires.PYF_basic import initial_load, save_output
-from pyfires.PYF_detection import run_dets, stage1_tests
+from pyfires.PYF_basic import initial_load, save_output, set_default_values
+from pyfires.PYF_detection import run_dets
+import pyfires.PYF_Consts as PYFc
 from satpy import Scene
 from tqdm import tqdm
 from glob import glob
@@ -57,7 +58,7 @@ def main():
     output_img_dir = 'D:/sat_data/ahi_main/out/'
 
     # Set an X-Y bounding box for cropping the input data.
-    bbox = None#(-1600000, -2770000, 690000, -1040000)
+    bbox = (-1600000, -2770000, 690000, -1040000)
 
     # Search for input timeslots.
     idirs = glob(f'{input_file_dir}/*1110*')
@@ -108,25 +109,16 @@ def main():
             data_dict = initial_load(ifiles_l15,        # Input file list
                                      'ahi_hsd',         # Satpy reader name
                                      bdict,             # Band mapping dict
-                                     do_load_lsm=True, # Don't load land-sea mask
+                                     do_load_lsm=False, # Don't load land-sea mask
                                      bbox=bbox)         # Bounding box for cropping
 
-            data_dict['PFP'] = stage1_tests(data_dict['MIR__BT'],
-                                            data_dict['BTD'],
-                                            data_dict['VI1_DIFF'],
-                                            data_dict['SZA'],
-                                            data_dict['LSM'],
-                                            ksizes=[5, 7, 9],
-                                            do_lsm_mask=True)
+            # Set up the constants used during processing
+            data_dict = set_default_values(data_dict)
 
             # Run the detection algorithm. This returns a boolean mask of the
             # fire detections as well as the actual fire radiative power data.
-            #fire_dets, frp_data = run_dets(data_dict)
-           # save_output(scn, fire_dets, 'fire_dets', outf1, ref='B07')
-            #save_output(scn, frp_data, 'fire_dets', outf2, ref='B07')
-            save_output(scn, data_dict['PFP'], 'BTD', outf1, ref='B07')
-            #save_output(scn, dd['t1'], 'VI1_DIFF', outf2, ref='B07')
-            #save_output(scn, dd['t2'], 'MIR__BT', outf3, ref='B07')
+            fire_dets, frp_data = run_dets(data_dict)
+            save_output(scn, frp_data, 'fire_dets', outf2, ref='B07')
 
         en = datetime.utcnow()
 

@@ -19,6 +19,7 @@
 
 """Constant values used in the fire detection."""
 
+import numpy as np
 
 # Platform short names used for selecting land-sea mask
 plat_shortnames = {'Himawari-8': 'HIMA',
@@ -31,7 +32,6 @@ plat_shortnames = {'Himawari-8': 'HIMA',
                    'Meteosat-10': 'MSG',
                    'Meteosat-11': 'MSG',
                    'MTG-I1': 'MTG'}
-
 
 # These are the radiance-to-temperature conversion coefficients for the FRP calculation.
 # See: doi:10.1016/S0034-4257(03)00070-1 for more info
@@ -61,6 +61,7 @@ lsm_land_val = 2
 
 # *** Stage 1 ***
 # Values used in stage 1a tests
+ksizes = [7, 9, 11]
 mir_thresh_bt = 310.5
 mir_thresh_sza_adj = -0.3
 mir_thresh_limit = 280
@@ -91,6 +92,65 @@ win_frac = 0.65
 mir_cand_minbt_thresh = 270
 mir_cand_maxbt_thresh = 330
 mir_cand_maxbtd_thresh = 8
+
+# Window sizes for background stats
+min_win_size = 5
+max_win_size = 25
+
+# Anisotropic diffusion threshold and iteration list
+aniso_thresh = 0.01
+aniso_iters = [1, 2, 3]
+
+# VID threshold
+vid2_thresh = -0.15
+
+# Multipliers for VID and MIR tests
+vid_std_mult = 1.5
+mir_std_mult = 1.5
+
+# Second stage kernel test size
+kern_test_size = 3
+
+# Final thresholds for percentage of good pixels, filtering poor quality retrievals.
+main_perc_thresh = 0.7
+
+# SZA adjustment factors
+sza_adj = 82
+sza_min_v = 0.04
+sza_max_v = 0.115
+sza_slo_str = 1.8
+sza_slo_rise = 0.2
+
+# Edge kernel for detection of sharp gradients
+edge_kern = np.array([[-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
+                      [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
+                      [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
+                      [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
+                      [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
+                      [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
+                      [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
+                      [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
+                      [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
+                      [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
+                      [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5]]) / 5
+
+# Thresholds for the BTD and VID local statistics
+btddif_thresh = 1.
+viddif_thresh = 0.04
+
+# Absolute MIR BT threshold before a pixel is declared 'fire'
+mir_abs_thresh = 350
+# BTD thresh for adding back missing pixels
+min_btd_addback = 2
+max_btd_addback = 15
+
+
+# Values for the cython function computing windowed statistics
+mir_minlat_thresh = 250
+mir_maxlat_thresh = 265
+mir_max_thresh = 340
+btd_max_thresh = 7
+lwi_min_thresh = 263.
 
 # Dictionary holding threshold values for the stage 6 / post-processing filters.
 ppf_thresh_dict = {

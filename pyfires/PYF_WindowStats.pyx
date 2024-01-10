@@ -19,25 +19,28 @@
 
 """Cython code for computing windowed statistics across all candidate fire pixels in a dataset."""
 
+import pyfires.PYF_Consts as PYFc
 from libc.stdlib cimport qsort, malloc, free
 from libc.math cimport isnan, cos, M_PI
 cimport numpy as np
 import numpy as np
 import cython
+import dask
 
 
-def get_local_stats(procpix, mir_bt, btd, vid):
+def get_local_stats(procpix, btd, vid):
     """Python wrapper for cython local statistics function.
     Inputs:
      - proc_pix: A binary mask indicating which pixels to process (NxM array)
-     - mirbt: The MIR brightness temperature (NxM array)
      - btd: The brightness temperature difference (NxM array)
      - vid: The MIR radiance minus VIS and LWIR components (NxM array)
     Returns:
      - diffarr: The average differences between the pixel and its neighbours for
-                each of the three input arrays: mir, btd, vid)  (NxMx3 array)
+                each of the three input arrays: mir, btd, vid)  (NxMx2 array)
     """
-    return _get_local_stats(procpix, mir_bt, btd, vid)
+    res = _get_local_stats(procpix, btd, vid)
+
+    return res
 
 
 @cython.boundscheck(False)
@@ -45,9 +48,8 @@ def get_local_stats(procpix, mir_bt, btd, vid):
 @cython.wraparound(False)
 @cython.initializedcheck(False)
 cdef _get_local_stats(unsigned char[:,:] proc_pix,
-                     float [:, :] mirbt,
-                     float [:, :] btd,
-                     float [:, :] vid):
+                      float [:, :] btd,
+                      float [:, :] vid):
     """Compute the local statistics for the current pixel.
     Inputs:
      - proc_pix: A binary mask indicating which pixels to process (NxM array)
@@ -62,14 +64,13 @@ cdef _get_local_stats(unsigned char[:,:] proc_pix,
     cdef int ypos = 0
     cdef int n_good = 0
 
-    cdef float mirdif = 0
     cdef float btdif = 0
     cdef float viddif = 0
 
     cdef int scn_width = int(proc_pix.shape[0])
     cdef int scn_height = int(proc_pix.shape[1])
 
-    cdef np.ndarray[dtype=np.float32_t, ndim=3] outarr = np.zeros((scn_width, scn_height, 3), dtype=np.single)
+    cdef np.ndarray[dtype=np.float32_t, ndim=3] outarr = np.zeros((scn_width, scn_height, 2), dtype=np.single)
     cdef float[:,:, ::1] outarr_view = outarr
 
     for xpos in range(1, scn_width - 1):
@@ -82,56 +83,46 @@ cdef _get_local_stats(unsigned char[:,:] proc_pix,
             n_good = 0
 
             if proc_pix[xpos - 1, ypos + 1] == 0:
-                outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] +  (mirbt[xpos, ypos] - mirbt[xpos - 1, ypos + 1])
-                outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] +  (btd[xpos, ypos] - btd[xpos - 1, ypos + 1])
-                outarr[xpos, ypos, 2] = outarr[xpos, ypos, 2] +  (vid[xpos, ypos] - vid[xpos - 1, ypos + 1])
+                outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] +  (btd[xpos, ypos] - btd[xpos - 1, ypos + 1])
+                outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] +  (vid[xpos, ypos] - vid[xpos - 1, ypos + 1])
                 n_good = n_good + 1
             if proc_pix[xpos -1 , ypos] == 0:
-                outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] +  (mirbt[xpos, ypos] - mirbt[xpos - 1, ypos])
-                outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] +  (btd[xpos, ypos] - btd[xpos - 1, ypos])
-                outarr[xpos, ypos, 2] = outarr[xpos, ypos, 2] +  (vid[xpos, ypos] - vid[xpos - 1, ypos])
+                outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] +  (btd[xpos, ypos] - btd[xpos - 1, ypos])
+                outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] +  (vid[xpos, ypos] - vid[xpos - 1, ypos])
                 n_good = n_good + 1
             if proc_pix[xpos - 1, ypos - 1] == 0:
-                outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] +  (mirbt[xpos, ypos] - mirbt[xpos - 1, ypos - 1])
-                outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] +  (btd[xpos, ypos] - btd[xpos - 1, ypos - 1])
-                outarr[xpos, ypos, 2] = outarr[xpos, ypos, 2] +  (vid[xpos, ypos] - vid[xpos - 1, ypos - 1])
+                outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] +  (btd[xpos, ypos] - btd[xpos - 1, ypos - 1])
+                outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] +  (vid[xpos, ypos] - vid[xpos - 1, ypos - 1])
                 n_good = n_good + 1
 
             if proc_pix[xpos, ypos + 1] == 0:
-                outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] +  (mirbt[xpos, ypos] - mirbt[xpos, ypos + 1])
-                outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] +  (btd[xpos, ypos] - btd[xpos, ypos + 1])
-                outarr[xpos, ypos, 2] = outarr[xpos, ypos, 2] +  (vid[xpos, ypos] - vid[xpos, ypos + 1])
+                outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] +  (btd[xpos, ypos] - btd[xpos, ypos + 1])
+                outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] +  (vid[xpos, ypos] - vid[xpos, ypos + 1])
                 n_good = n_good + 1
             if proc_pix[xpos, ypos - 1] == 0:
-                outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] +  (mirbt[xpos, ypos] - mirbt[xpos, ypos - 1])
-                outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] +  (btd[xpos, ypos] - btd[xpos, ypos - 1])
-                outarr[xpos, ypos, 2] = outarr[xpos, ypos, 2] +  (vid[xpos, ypos] - vid[xpos, ypos - 1])
+                outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] +  (btd[xpos, ypos] - btd[xpos, ypos - 1])
+                outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] +  (vid[xpos, ypos] - vid[xpos, ypos - 1])
                 n_good = n_good + 1
 
             if proc_pix[xpos + 1, ypos + 1] == 0:
-                outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] +  (mirbt[xpos, ypos] - mirbt[xpos + 1, ypos + 1])
-                outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] +  (btd[xpos, ypos] - btd[xpos + 1, ypos + 1])
-                outarr[xpos, ypos, 2] = outarr[xpos, ypos, 2] +  (vid[xpos, ypos] - vid[xpos + 1, ypos + 1])
+                outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] +  (btd[xpos, ypos] - btd[xpos + 1, ypos + 1])
+                outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] +  (vid[xpos, ypos] - vid[xpos + 1, ypos + 1])
                 n_good = n_good + 1
             if proc_pix[xpos + 1, ypos] == 0:
-                outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] +  (mirbt[xpos, ypos] - mirbt[xpos + 1, ypos])
-                outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] +  (btd[xpos, ypos] - btd[xpos + 1, ypos])
-                outarr[xpos, ypos, 2] = outarr[xpos, ypos, 2] +  (vid[xpos, ypos] - vid[xpos + 1, ypos])
+                outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] +  (btd[xpos, ypos] - btd[xpos + 1, ypos])
+                outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] +  (vid[xpos, ypos] - vid[xpos + 1, ypos])
                 n_good = n_good + 1
             if proc_pix[xpos + 1, ypos - 1] == 0:
-                outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] +  (mirbt[xpos, ypos] - mirbt[xpos + 1, ypos - 1])
-                outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] +  (btd[xpos, ypos] - btd[xpos + 1, ypos - 1])
-                outarr[xpos, ypos, 2] = outarr[xpos, ypos, 2] +  (vid[xpos, ypos] - vid[xpos + 1, ypos - 1])
+                outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] +  (btd[xpos, ypos] - btd[xpos + 1, ypos - 1])
+                outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] +  (vid[xpos, ypos] - vid[xpos + 1, ypos - 1])
                 n_good = n_good + 1
 
             if n_good < 1:
                 outarr[xpos, ypos, 0] = 1.
                 outarr[xpos, ypos, 1] = 1.
-                outarr[xpos, ypos, 2] = 1.
             else:
                 outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] / float(n_good)
                 outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] / float(n_good)
-                outarr[xpos, ypos, 2] = outarr[xpos, ypos, 2] / float(n_good)
 
     return outarr
 
@@ -150,6 +141,9 @@ cdef int compare_twofloats(const void *a, const void *b) noexcept nogil: #noqa
         return 1
     return 0
 
+
+def py_get_curwindow_pos(int xpos, int ypos, int winsize, int scn_width, int scn_height):
+    return get_curwindow_pos(xpos, ypos, winsize, scn_width, scn_height)
 
 @cython.boundscheck(False)
 @cython.cdivision(True)
@@ -174,20 +168,28 @@ cdef get_curwindow_pos(int xpos, int ypos, int winsize, int scn_width, int scn_h
     # Apply some range tests, so we can use cython in the non-bounds checking mode
     if shape_sel[0] < 0:
         shape_sel[0] = -999
+        return shape_sel
     elif shape_sel[0] >= scn_width:
         shape_sel[0] = -999
+        return shape_sel
     if shape_sel[1] < 0:
         shape_sel[0] = -999
-    elif shape_sel[1] >= scn_height:
+        return shape_sel
+    elif shape_sel[1] >= scn_width:
         shape_sel[0] = -999
+        return shape_sel
     if shape_sel[2] < 0:
         shape_sel[0] = -999
-    elif shape_sel[2] >= scn_width:
+        return shape_sel
+    elif shape_sel[2] >= scn_height:
         shape_sel[0] = -999
+        return shape_sel
     if shape_sel[3] < 0:
         shape_sel[0] = -999
+        return shape_sel
     elif shape_sel[3] >= scn_height:
         shape_sel[0] = -999
+        return shape_sel
 
     return shape_sel
 
@@ -196,8 +198,8 @@ cdef get_curwindow_pos(int xpos, int ypos, int winsize, int scn_width, int scn_h
 @cython.wraparound(False)
 @cython.initializedcheck(False)
 cdef get_window_mea_stdv(int winsize,
+                         unsigned char[:,:] pfp,
                          float[:,:] cur__vis,
-                         float[:,:] cur_ndfi,
                          float[:,:] cur__lwi,
                          float[:,:] cur__btd,
                          float[:,:] cur__mir,
@@ -206,32 +208,29 @@ cdef get_window_mea_stdv(int winsize,
                          float cen__mir,
                          float cen__btd,
                          float cen__lat,
-                         unsigned char lsm_land_val = 2,
-                         float mir_minlat_thresh = 250,
-                         float mir_maxlat_thresh = 265,
-                         float mir_max_thresh = 340,
-                         float btd_max_thresh = 7,
-                         float lwi_min_thresh = 263.,
+                         unsigned char lsm_land_val = PYFc.lsm_land_val,
+                         float mir_minlat_thresh = PYFc.mir_minlat_thresh,
+                         float mir_maxlat_thresh = PYFc.mir_maxlat_thresh,
+                         float mir_max_thresh = PYFc.mir_max_thresh,
+                         float btd_max_thresh = PYFc.btd_max_thresh,
+                         float lwi_min_thresh = PYFc.lwi_min_thresh,
                          ):
     cdef int arrsize_x = winsize + winsize + 1
     cdef int arrsize_y = winsize + winsize + 1
     cdef int i = 0
     cdef int j = 0
 
+    cdef int arr_shp_x = int(cur__lwi.shape[0])
+    cdef int arr_shp_y = int(cur__lwi.shape[1])
+
     cdef int n_good = 0
     cdef float perc_good = 0
+    cdef int n_pfp = 0
+    cdef float perc_pfp = 0
 
     cdef float sum_val_vi = 0
     cdef float mea_val_vi = -999.
     cdef float std_val_vi = -999.
-
-    cdef float sum_val_nd = 0
-    cdef float mea_val_nd = -999.
-    cdef float std_val_nd = -999.
-
-    cdef float sum_val_lw = 0
-    cdef float mea_val_lw = -999.
-    cdef float std_val_lw = -999.
 
     cdef float sum_val_btd = 0
     cdef float mea_val_btd = -999.
@@ -246,18 +245,18 @@ cdef get_window_mea_stdv(int winsize,
     cdef float std_val_vid = -999.
 
     cdef float mir_slope = mir_maxlat_thresh - mir_minlat_thresh
-    cdef float mir_min_thresh = mir_minlat_thresh + mir_slope * cos(cen__lat * M_PI / 180.)
+    cdef float mir_min_thresh = mir_minlat_thresh + mir_slope * float(cos(cen__lat * M_PI / 180.))
 
-    cdef float res[16]
+    cdef float res[12]
 
     cdef int n_wat = 0
     cdef int n_cld = 0
 
-    if arrsize_x > cur__lwi.shape[0]:
-        arrsize_x = cur__lwi.shape[0]
+    if arrsize_x > arr_shp_x:
+        arrsize_x = arr_shp_x
 
-    if arrsize_y > cur__lwi.shape[1]:
-        arrsize_y = cur__lwi.shape[1]
+    if arrsize_y > arr_shp_y:
+        arrsize_y = arr_shp_y
 
     cdef int npix = arrsize_x * arrsize_y
 
@@ -266,10 +265,12 @@ cdef get_window_mea_stdv(int winsize,
         for j in range(0, arrsize_y):
             if i >= winsize - 1 and i <= winsize + 1 and j >= winsize - 1 and j <= winsize + 1:
                 continue
+            if pfp[i,j] == 1:
+                n_pfp = n_pfp + 1
+            if cur__mir[i,j] > cen__mir or isnan(cur__mir[i, j]):
+                continue
             if cur__lwi[i,j] < lwi_min_thresh or isnan(cur__lwi[i, j]):
                 n_cld = n_cld + 1
-                continue
-            if cur__mir[i,j] > cen__mir or isnan(cur__mir[i, j]):
                 continue
             if cur__btd[i,j] > cen__btd or isnan(cur__btd[i, j]):
                 continue
@@ -282,14 +283,13 @@ cdef get_window_mea_stdv(int winsize,
                     n_wat = n_wat + 1
                     continue
             n_good = n_good + 1
-    perc_good = n_good / (npix - 9)
+    perc_good = n_good / (npix - 9.)
+    perc_pfp = (n_good + n_pfp) / (npix - 9.)
 
     cdef float *mainmed_mir = <float *> malloc(n_good * sizeof(float))
     cdef float *mainmed_btd = <float *> malloc(n_good * sizeof(float))
-    cdef float *mainmed_lwi = <float *> malloc(n_good * sizeof(float))
     cdef float *mainmed_vi = <float *> malloc(n_good * sizeof(float))
     cdef float *mainmed_vid = <float *> malloc(n_good * sizeof(float))
-    cdef float *mainmed_nd = <float *> malloc(n_good * sizeof(float))
 
     cdef int cur_n = 0
 
@@ -312,46 +312,34 @@ cdef get_window_mea_stdv(int winsize,
                     continue
             mainmed_mir[cur_n] = cur__mir[i, j]
             mainmed_btd[cur_n] = cur__btd[i, j]
-            mainmed_lwi[cur_n] = cur__lwi[i, j]
             mainmed_vi[cur_n] = cur__vis[i, j]
             mainmed_vid[cur_n] = cur__vid[i, j]
-            mainmed_nd[cur_n] = cur_ndfi[i, j]
             cur_n = cur_n + 1
 
     with cython.nogil:
         qsort(mainmed_mir, n_good, sizeof(float), compare_twofloats)
         qsort(mainmed_btd, n_good, sizeof(float), compare_twofloats)
-        qsort(mainmed_lwi, n_good, sizeof(float), compare_twofloats)
         qsort(mainmed_vi, n_good, sizeof(float), compare_twofloats)
         qsort(mainmed_vid, n_good, sizeof(float), compare_twofloats)
-        qsort(mainmed_nd, n_good, sizeof(float), compare_twofloats)
 
         if n_good % 2 == 0:
             mea_val_vi = (mainmed_vi[n_good / 2] + mainmed_vi[n_good / 2 - 1]) / 2
-            mea_val_nd = (mainmed_nd[n_good / 2] + mainmed_nd[n_good / 2 - 1]) / 2
-            mea_val_lw = (mainmed_lwi[n_good / 2] + mainmed_lwi[n_good / 2 - 1]) / 2
             mea_val_btd = (mainmed_btd[n_good / 2] + mainmed_btd[n_good / 2 - 1]) / 2
             mea_val_mir = (mainmed_mir[n_good / 2] + mainmed_mir[n_good / 2 - 1]) / 2
             mea_val_vid = (mainmed_vid[n_good / 2] + mainmed_vid[n_good / 2 - 1]) / 2
         else:
             mea_val_vi = mainmed_vi[n_good / 2]
-            mea_val_nd = mainmed_nd[n_good / 2]
-            mea_val_lw = mainmed_lwi[n_good / 2]
             mea_val_btd = mainmed_btd[n_good / 2]
             mea_val_mir = mainmed_mir[n_good / 2]
             mea_val_vid = mainmed_vid[n_good / 2]
 
     free(mainmed_mir)
     free(mainmed_btd)
-    free(mainmed_lwi)
     free(mainmed_vi)
     free(mainmed_vid)
-    free(mainmed_nd)
 
      # Loop to find standard deviation
     sum_val_vi = 0
-    sum_val_nd = 0
-    sum_val_lw = 0
     sum_val_btd = 0
     sum_val_mir = 0
     sum_val_vid = 0
@@ -373,52 +361,44 @@ cdef get_window_mea_stdv(int winsize,
                 if cur__lsm[i,j] != lsm_land_val:
                     continue
             sum_val_vi = sum_val_vi + abs(cur__vis[i, j] - mea_val_vi)
-            sum_val_nd = sum_val_nd + abs(cur_ndfi[i, j] - mea_val_nd)
-            sum_val_lw = sum_val_lw + abs(cur__lwi[i, j] - mea_val_lw)
             sum_val_btd = sum_val_btd + abs(cur__btd[i, j] - mea_val_btd)
             sum_val_mir = sum_val_mir + abs(cur__mir[i, j] - mea_val_mir)
             sum_val_vid = sum_val_vid + abs(cur__vid[i, j] - mea_val_vid)
 
-    std_val_lw = sum_val_lw / n_good
-    std_val_nd = sum_val_nd / n_good
     std_val_vi = sum_val_vi / n_good
     std_val_btd = sum_val_btd / n_good
     std_val_mir = sum_val_mir / n_good
     std_val_vid = sum_val_vid / n_good
 
     res[0] = perc_good
-    res[1] = npix
-    res[2] = n_cld
-    res[3] = n_wat
-    res[4] = mea_val_lw
-    res[5] = std_val_lw
-    res[6] = mea_val_nd
-    res[7] = std_val_nd
-    res[8] = mea_val_vi
-    res[9] = std_val_vi
-    res[10] = mea_val_btd
-    res[11] = std_val_btd
-    res[12] = mea_val_mir
-    res[13] = std_val_mir
-    res[14] = mea_val_vid
-    res[15] = std_val_vid
+    res[1] = perc_pfp
+    res[2] = float(npix)
+    res[3] = float(n_wat)
+    res[4] = mea_val_vi
+    res[5] = std_val_vi
+    res[6] = mea_val_btd
+    res[7] = std_val_btd
+    res[8] = mea_val_mir
+    res[9] = std_val_mir
+    res[10] = mea_val_vid
+    res[11] = std_val_vid
     return res
 
 
 def get_mea_std_window(unsigned char[:,:] pfp_data,
                        float[:,:] vi_rad_data,
-                       float[:,:] ndfi_data,
                        float[:,:] lw_bt_data,
                        float[:,:] btd_arr,
                        float[:,:] mir_arr,
                        float[:,:] vid_arr,
                        unsigned char[:,:] lsm,
                        float[:,:] lats,
-                       unsigned char lsm_land_val,
-                       int winsize):
-
-    cdef int scn_width = int(vi_rad_data.shape[0])
-    cdef int scn_height = int(vi_rad_data.shape[1])
+                       int scn_width,
+                       int scn_height,
+                       unsigned char lsm_land_val=PYFc.lsm_land_val,
+                       int min_wsize=PYFc.min_win_size,
+                       int max_wsize=PYFc.max_win_size,
+                       float perc_thresh=PYFc.win_frac):
 
     cdef int x_0 = 0
     cdef int x_1 = scn_width
@@ -428,57 +408,51 @@ def get_mea_std_window(unsigned char[:,:] pfp_data,
     # Counters for main loop
     cdef int x = 0
     cdef int y = 0
-    cdef int wsize = winsize
+    cdef int wsize = min_wsize
     cdef int cur_win[4]
 
     # Intermediate variables
     cdef float sum_tot = 0
     cdef int n = 0
-    cdef float cen_vid = 0
     cdef float cen_btd = 999
     cdef float cen_mir = 999
-    cdef float cen_irr = 0
-    cdef float cen_lwi = 0
-    cdef float res[16]
+    cdef float cen_lon = 999
+    cdef float res[12]
 
     # Output datasets
-    cdef np.ndarray[dtype=np.float32_t, ndim=3] outarr = np.zeros((16, scn_width, scn_height), dtype=np.single)
+    cdef np.ndarray[dtype=np.float32_t, ndim=3] outarr = np.zeros((12, scn_width, scn_height), dtype=np.single)
     cdef float[:,:, ::1] outarr_view = outarr
-
-    min_wsize = 5
-    max_wsize = 15
-    perc_thresh = 0.65
-    n_thresh = 101
 
     # Loop across all pixels in the image
     for x in range(x_0, x_1):
         for y in range(y_0, y_1):
-            if pfp_data[x, y] != 1:
+            if pfp_data[x + max_wsize, y + max_wsize] != 1:
                 outarr_view[:, x, y] = -999
                 continue
-            for wsize in range(min_wsize, max_wsize):
+            for wsize in range(min_wsize, max_wsize+1):
                 # Determine coordinates of the current window
-                cur_win = get_curwindow_pos(x, y, wsize, scn_width, scn_height)
+                cur_win = get_curwindow_pos(x + max_wsize, y + max_wsize, wsize, scn_width, scn_height)
                 # Don't process if any coords are bad (usually at extreme edges of image)
                 if cur_win[0] < 0:
+                    outarr_view[:, x, y] = -999
                     continue
 
                 cur__vis = vi_rad_data[cur_win[0]:cur_win[1], cur_win[2]:cur_win[3]]
-                cur_ndfi = ndfi_data[cur_win[0]:cur_win[1], cur_win[2]:cur_win[3]]
                 cur__lwi = lw_bt_data[cur_win[0]:cur_win[1], cur_win[2]:cur_win[3]]
                 cur__btd = btd_arr[cur_win[0]:cur_win[1], cur_win[2]:cur_win[3]]
                 cur__mir = mir_arr[cur_win[0]:cur_win[1], cur_win[2]:cur_win[3]]
                 cur__vid = vid_arr[cur_win[0]:cur_win[1], cur_win[2]:cur_win[3]]
                 cur__lsm = lsm[cur_win[0]:cur_win[1], cur_win[2]:cur_win[3]]
+                cur__pfp = pfp_data[cur_win[0]:cur_win[1], cur_win[2]:cur_win[3]]
 
-                cen_mir = mir_arr[x, y]
-                cen_btd = btd_arr[x, y]
-                cen_lon = lats[x, y]
+                cen_mir = mir_arr[x + max_wsize, y + max_wsize]
+                cen_btd = btd_arr[x + max_wsize, y + max_wsize]
+                cen_lon = lats[x + max_wsize, y + max_wsize]
 
                 # Compute mean and standard deviation across window
                 res = get_window_mea_stdv(wsize,
+                                          cur__pfp,
                                           cur__vis,
-                                          cur_ndfi,
                                           cur__lwi,
                                           cur__btd,
                                           cur__mir,
@@ -488,7 +462,7 @@ def get_mea_std_window(unsigned char[:,:] pfp_data,
                                           cen_btd,
                                           cen_lon,
                                           lsm_land_val)
-                if (res[0] > perc_thresh) or (res[0] * res[1]) > n_thresh:
+                if res[0] > perc_thresh or res[1] > perc_thresh + 0.1:
                     break
 
             # Set output array to:
@@ -497,17 +471,16 @@ def get_mea_std_window(unsigned char[:,:] pfp_data,
             outarr_view[1, x, y] = res[1]     # Number of pixels in window
             outarr_view[2, x, y] = res[2]     # Number of cloudy pixels in window
             outarr_view[3, x, y] = res[3]     # Number of water body pixels in window
-            outarr_view[4, x, y] = res[4]     # LW BT mean
-            outarr_view[5, x, y] = res[5]     # LW BT std-dev
-            outarr_view[6, x, y] = res[6]     # NDFI mean
-            outarr_view[7, x, y] = res[7]     # NDFI std-dev
-            outarr_view[8, x, y] = res[8]     # VIS radiance mean
-            outarr_view[9, x, y] = res[9]     # VIS radiance std-dev
-            outarr_view[10, x, y] = res[10]   # BTD mean
-            outarr_view[11, x, y] = res[11]   # BTD std-dev
-            outarr_view[12, x, y] = res[12]   # MIR BT mean
-            outarr_view[13, x, y] = res[13]   # MIR BT std-dev
-            outarr_view[14, x, y] = res[14]   # VisDiff mean
-            outarr_view[15, x, y] = res[15]   # VisDiff std-dev
+            outarr_view[4, x, y] = res[4]     # VIS radiance mean
+            outarr_view[5, x, y] = res[5]     # VIS radiance std-dev
+            outarr_view[6, x, y] = res[6]   # BTD mean
+            outarr_view[7, x, y] = res[7]   # BTD std-dev
+            outarr_view[8, x, y] = res[8]   # MIR BT mean
+            outarr_view[9, x, y] = res[9]   # MIR BT std-dev
+            outarr_view[10, x, y] = res[10]   # VisDiff mean
+            outarr_view[11, x, y] = res[11]   # VisDiff std-dev
 
     return outarr
+
+def py_get_window_mea_stdv(wsize, cvis, clwi, cbtd, cmir, cvid, clsm, cen_mir, cen_btd, cen_lon, lsm_land_val):
+    return get_window_mea_stdv(wsize, cvis, clwi, cbtd, cmir, cvid, clsm, cen_mir, cen_btd, cen_lon, lsm_land_val)

@@ -29,17 +29,6 @@ import xarray as xr
 import dask
 
 
-def _make_gkern(ksize=5, sig=1.):
-    """
-    creates gaussian kernel with side length `l` and a sigma of `sig`
-    From: https://stackoverflow.com/a/43346070/5169272
-    """
-    ax = np.linspace(-(ksize - 1) / 2., (ksize - 1) / 2., ksize)
-    gauss = np.exp(-0.5 * np.square(ax) / np.square(sig))
-    kernel = np.outer(gauss, gauss)
-    return kernel / np.sum(kernel)
-
-
 def _make_kern(ksize):
     """Make a high pass kernel of given size.
     Inputs:
@@ -139,7 +128,7 @@ def stage1_tests(in_mir,
                  in_vid,
                  in_sza,
                  in_lsm,
-                 ksizes=[3, 5, 7],
+                 ksizes=PYFc.ksizes,
                  kern_thresh_btd=PYFc.kern_thresh_btd,
                  kern_thresh_sza_adj=PYFc.kern_thresh_sza_adj,
                  do_lsm_mask=True,
@@ -162,14 +151,18 @@ def stage1_tests(in_mir,
     btd_kern_thr = kern_thresh_btd + kern_thresh_sza_adj * in_sza
 
     mir_thresh, btd_thresh = set_initial_thresholds(in_sza)
-    main_testarr = da.zeros_like(in_mir)
 
     # This is stage 1b, applied before 1a to simplify processing.
 
-    for ksize in ksizes:
-        kerval, stdval = do_apply_stg1b_kern2(in_btd, ksize)
+    out_list = []
+
+    for k in range(0, len(ksizes)):
+        kerval, stdval = do_apply_stg1b_kern2(in_btd, ksizes[k])
         tmpdata = xr.where(kerval >= stdval * btd_kern_thr, 1, 0)
-        main_testarr = xr.where(tmpdata > 0, 1, main_testarr)
+        out_list.append(tmpdata)
+
+    main_testarr = xr.where(out_list[0] + out_list[1] + out_list[2] >= 1, 1, 0)
+    # main_testarr = xr.where(tmpdata > 0, 1, main_testarr)
 
     main_testarr = xr.where(in_mir >= mir_thresh, main_testarr, 0)
     main_testarr = xr.where(in_btd >= btd_thresh, main_testarr, 0)
@@ -181,8 +174,7 @@ def stage1_tests(in_mir,
     # Only select pixels with positive MIR radiance after VIS and IR subtractions.
     pfp_arr = xr.where(in_vid >= 0, main_testarr, 0).astype(np.uint8)
 
-    #pfp_arr = xr.where(main_testarr >= PYFc.stage1_pass_thresh, 1, 0).astype(np.uint8)
-
+    # pfp_arr = xr.where(main_testarr >= PYFc.stage1_pass_thresh, 1, 0).astype(np.uint8)
 
     # Return only those pixels meeting test threshold
     return pfp_arr
@@ -232,6 +224,209 @@ def compute_background_rad(indata,
     return bins[i]
 
 
+def run_dets(data_dict):
+    # Select potential fire pixels using the Roberts + Wooster Stage 1 + 2 tests
+
+    data_dict['PFP'] = stage1_tests(data_dict['MIR__BT'],
+                                    data_dict['BTD'],
+                                    data_dict['VI1_DIFF'],
+                                    data_dict['SZA'],
+                                    data_dict['LSM'],
+                                    ksizes=data_dict['ksizes'],
+                                    do_lsm_mask=True,
+                                    kern_thresh_btd=data_dict['kern_thresh_btd'],
+                                    kern_thresh_sza_adj=data_dict['kern_thresh_sza_adj'],
+                                    lsm_land_val=data_dict['lsm_val'])
+
+    outan = da.map_overlap(do_windowed,
+                           data_dict['PFP'],
+                           data_dict['VI1_RAD'],
+                           data_dict['LW1__BT'],
+                           data_dict['BTD'],
+                           data_dict['MIR__BT'],
+                           data_dict['VI1_DIFF'],
+                           data_dict['LSM'],
+                           data_dict['LATS'],
+                           min_wsize=data_dict['min_wsize'],
+                           max_wsize=data_dict['max_wsize'],
+                           lsm_val=data_dict['lsm_val'],
+                           perc_thresh=data_dict['perc_thresh'],
+                           depth=data_dict['max_wsize'],
+                           trim=False,
+                           boundary=999,
+                           meta=(np.array((), dtype=np.float32)),
+                           dtype=np.float32,
+                           new_axis=0,
+                           chunks=(12, data_dict['BTD'].chunks[0], data_dict['BTD'].chunks[1]))
+
+
+    perc_good = outan[0, :, :]
+    perc_pfp = outan[1, :, :]
+    n_winpix = outan[2, :, :]
+    n_waterpix = outan[3, :, :]
+    mean_vi = outan[4, :, :]
+    std_vi = outan[5, :, :]
+    mean_btd = outan[6, :, :]
+    std_btd = outan[7, :, :]
+    mean_mir = outan[8, :, :]
+    std_mir = outan[9, :, :]
+    mean_vid = outan[10, :, :]
+    std_vid = outan[11, :, :]
+
+    # Define some test thresholds for further selection of potential fire pixels
+    vi1_diff_stdm = (data_dict['VI1_DIFF'] - mean_vid) / std_vid
+    mir_bt_stdm = (data_dict['MIR__BT'] - mean_mir) / std_mir
+    vi1_rad_stdm = (data_dict['VI1_RAD'] - mean_vi) / std_vi
+
+    # Compute the anisotropic diffusion of the MIR band at various iteration levels
+    wrap_get_aniso_diffs = dask.delayed(get_aniso_diffs)
+    aniso_std = dask.array.from_delayed(wrap_get_aniso_diffs(data_dict['VI1_DIFF_2'],
+                                                             data_dict['iter_list']),
+                                        shape=data_dict['VI1_DIFF_2'].shape,
+                                        dtype=np.single)
+
+    # Some additional fire screening tests
+    # Fire pixels will have a high anisotropic diffusion value compared to background
+    main_det_arr = (aniso_std > data_dict['aniso_thresh']).astype(np.uint8)
+    # Fire pixels will also have a radiance compared to non-fire pixels in the MIR
+    main_det_arr = main_det_arr * (data_dict['VI1_DIFF_2'] > data_dict['vid2_thresh'])
+    # Only select pixels that pass the Roberts + Wooster tests
+    main_det_arr = main_det_arr * data_dict['PFP']
+
+    main_det_arr = main_det_arr * (vi1_diff_stdm > vi1_rad_stdm * data_dict['vid_stdm_mult'])
+    main_det_arr = main_det_arr * (mir_bt_stdm > data_dict['mir_stdm_mult'])
+
+    kern = np.ones((data_dict['kern_test_size'], data_dict['kern_test_size']))
+
+    fir_d_sum = convolve(main_det_arr, kern)
+    local_max = maximum_filter(data_dict['VI1_DIFF'], (data_dict['kern_test_size'], data_dict['kern_test_size']))
+    tmp_out = (fir_d_sum == 1) * (data_dict['VI1_DIFF'] == local_max)
+
+    main_out = main_det_arr * (fir_d_sum > 1) + tmp_out * main_det_arr
+
+    # These are the background window stats from Wooster + Roberts (eqns 5)
+    main_out = main_out * xr.where(data_dict['MIR__BT'] > mean_mir + 2 * std_mir, main_out, 0)
+    main_out = main_out * xr.where(data_dict['BTD'] > mean_btd + 2.5, main_out, 0)
+    main_out = main_out * xr.where(data_dict['BTD'] > mean_btd + 2 * std_btd, main_out, 0)
+
+    fir_d_sum = convolve(main_out, kern)
+    local_max = maximum_filter(data_dict['MIR__BT'],
+                               (data_dict['kern_test_size'], data_dict['kern_test_size']))
+    tmp_out = (fir_d_sum == 1) * (data_dict['MIR__BT'] == local_max)
+    main_out = main_out * (fir_d_sum > 1) + main_out * tmp_out
+
+    kern = PYFc.edge_kern
+    resx = np.abs(convolve(data_dict['MIR__BT'], kern))
+    kern = kern.T
+    resy = np.abs(convolve(data_dict['MIR__BT'], kern))
+    res = np.sqrt(resx * resx + resy * resy)
+    main_out = main_out * (res < 500)
+
+    delayed_local_stats = dask.delayed(get_local_stats)
+    locarr = delayed_local_stats(da.array(main_out),
+                                 da.array(data_dict['BTD']),
+                                 da.array(data_dict['VI1_DIFF']))
+    locarrn = dask.array.from_delayed(locarr,
+                                      shape=(data_dict['BTD'].shape[0], data_dict['BTD'].shape[1], 2),
+                                      dtype=np.single)
+    btddif = locarrn[:, :, 0]
+    viddif = locarrn[:, :, 1]
+
+    main_out = main_out * (btddif > data_dict['btddif_thresh']) * (viddif > data_dict['viddif_thresh'])
+    main_out = main_out * (data_dict['BTD'] > mean_btd + std_mir + std_btd)
+
+    kern = np.ones((data_dict['kern_test_size'], data_dict['kern_test_size']))
+    fir_d_sum = convolve(main_out, kern)
+    local_max = maximum_filter(data_dict['VI1_DIFF'], (data_dict['kern_test_size'], data_dict['kern_test_size']))
+    out5 = (fir_d_sum == 1) * (data_dict['VI1_DIFF'] == local_max)
+    main_out = main_out * (fir_d_sum > 1) + out5 * main_out
+
+    kern_ones = np.ones((data_dict['kern_test_size'], data_dict['kern_test_size']))
+    fir_d_sum = convolve(main_out, kern_ones)
+    local_max = maximum_filter(data_dict['MIR__BT'], (data_dict['kern_test_size'], data_dict['kern_test_size']))
+    out5 = (fir_d_sum == 1) * (data_dict['MIR__BT'] == local_max)
+    main_out = main_out * (fir_d_sum > 1) + out5 * main_out
+
+    main_out_tmp = main_out + xr.where(data_dict['MIR__BT'] > data_dict['mir_abs_thresh'], 1, 0).astype(np.uint8)
+    main_out_tmp = xr.where(main_out_tmp > 0, 1, 0).astype(np.uint8)
+
+    # Threshold for removing pixels that don't meet the windowed percentage criteria
+    main_out_tmp = main_out_tmp * (perc_pfp + perc_good > data_dict['main_perc_thresh']).astype(np.uint8)
+
+    fir_d_sum = convolve(main_out_tmp, kern_ones)
+
+    # Threshold for adding missing fire pixels, as the algorithm removes some pixels adjacent to existing detections
+    # We add back using the BTD weighted by the number of fire pixels adjacent to the candidate.
+    btd_addback_thresh = ((9 - fir_d_sum) * (
+            8 / (data_dict['max_btd_addback'] - data_dict['min_btd_addback'])) +
+                          data_dict['min_btd_addback'] + mean_btd + std_btd)
+    btd_addback_thresh = btd_addback_thresh * data_dict['PFP']
+
+    main_out = main_out_tmp + xr.where(data_dict['BTD'] > btd_addback_thresh, 1, 0).astype(np.uint8)
+    main_out = (xr.where(main_out > 0, 1, 0).astype(np.uint8) *
+                xr.where(data_dict['PFP'] > 0, 1, 0).astype(np.uint8) *
+                xr.where(fir_d_sum > 0, 1, 0).astype(np.uint8))
+
+    data_dict['mean_mir'] = mean_mir
+    data_dict['mean_btd'] = mean_btd
+    data_dict['std_btd'] = std_btd
+
+    data_dict['fire_dets'] = main_out
+
+    data_dict = calc_frp(data_dict)
+
+    return data_dict['fire_dets'], data_dict['frp_est']
+
+
+def do_windowed(pfp,
+                vis_rad,
+                lw_bt,
+                btd,
+                mir_bt,
+                vid,
+                lsm,
+                lats,
+                min_wsize=PYFc.min_win_size,
+                max_wsize=PYFc.max_win_size,
+                lsm_val=PYFc.lsm_land_val,
+                perc_thresh=PYFc.win_frac,
+                block_info=None):
+
+    """Wrapper for the windowed statistics function.
+    Inputs:
+    - pfp: The PFP data
+    - vis_rad: The VIS radiance data
+    - lw_bt: The LWIR BT data
+    - btd: The BTD data
+    - mir_bt: The MIR BT data
+    - vid: The MIR - VIS - LWIR radiance data
+    - lsm: The land-sea mask data
+    - lats: The latitude data
+    - min_wsize: The minimum window size for windowed statistics
+    - max_wsize: The maximum window size for windowed statistics
+    - lsm_val: The land-sea mask value for land
+    - perc_thresh: Percentage of good pixels in window in order for stats to be selected
+    - block_info: Dask block info
+
+    Returns:
+    - outarr: The output array containing the windowed statistics.
+    """
+
+    # We need to get the window shape from the block info
+    arr_shp = block_info[None]['array-location']
+
+    xs = arr_shp[1][1] - arr_shp[1][0]
+    ys = arr_shp[2][1] - arr_shp[2][0]
+    # Create output array. Not strictly needed but helps catch problems
+    outarr = np.zeros((12, xs, ys))
+    # run the windowed stats cython function
+    outarr[:, :, :] = get_mea_std_window(pfp, vis_rad, lw_bt, btd, mir_bt, vid, lsm, lats, xs, ys,
+                                         lsm_val, min_wsize, max_wsize, perc_thresh)
+
+    return outarr
+
+
+# NOTE: This function is not currently used in the detection algorithm and may be outdated / non-functional
 def run_basic_night_detection(in_vi2_rad,
                               in_sza,
                               in_vid,
@@ -299,172 +494,3 @@ def run_basic_night_detection(in_vi2_rad,
     out_dets = xr.where(in_sza > opts['sza_thresh'], out_dets, 0)
 
     return out_dets, def_dets
-
-
-
-def run_dets(data_dict):
-
-    # Select potential fire pixels using the Roberts + Wooster Stage 1 + 2 tests
-
-    data_dict['PFP'] = stage1_tests(data_dict['MIR__BT'],
-                                    data_dict['BTD'],
-                                    data_dict['VI1_DIFF'],
-                                    data_dict['SZA'],
-                                    data_dict['LSM'],
-                                    ksizes=[5, 7, 9],
-                                    do_lsm_mask=True)
-
-    # For the potential fire pixels previously defined, compute the per-pixel windows stats
-    wrap_get_mean_std = dask.delayed(get_mea_std_window)
-    outa = wrap_get_mean_std(data_dict['PFP'],
-                             data_dict['VI1_RAD'],  # VIS chan
-                             data_dict['mi_ndfi'],  # NDFI
-                             data_dict['LW1__BT'],  # LW Brightness Temperature
-                             data_dict['BTD'],      # MIR-LW BTD
-                             data_dict['MIR__BT'],  # MIR BT
-                             data_dict['VI1_DIFF'], # MIR-LWIR-VIS radiance diff
-                             data_dict['LSM'],      # The land-sea mask
-                             data_dict['LATS'],     # The pixel latitudes
-                             255,                   # The value denoting land in the LSM. If 255, ignore mask
-                             25)
-
-    outan = dask.array.from_delayed(outa,
-                                    shape=(16, data_dict['BTD'].shape[0], data_dict['BTD'].shape[1]),
-                                    dtype=np.single)
-
-    perc_good = outan[0, :, :]
-    n_winpix = outan[1, :, :]
-    n_cloudpix = outan[2, :, :]
-    n_waterpix = outan[3, :, :]
-    mean_lw = outan[4, :, :]
-    std_lw = outan[5, :, :]
-    mean_nd = outan[6, :, :]
-    std_nd = outan[7, :, :]
-    mean_vi = outan[8, :, :]
-    std_vi = outan[9, :, :]
-    mean_btd = outan[10, :, :]
-    std_btd = outan[11, :, :]
-    mean_mir = outan[12, :, :]
-    std_mir = outan[13, :, :]
-    mean_vid = outan[14, :, :]
-    std_vid = outan[15, :, :]
-
-    # Define some test thresholds for further selection of potential fire pixels
-    vi1_diff_stdm = (data_dict['VI1_DIFF'] - mean_vid) / std_vid
-    mir_bt_stdm = (data_dict['MIR__BT'] - mean_mir) / std_mir
-    vi1_rad_stdm = (data_dict['VI1_RAD'] - mean_vi) / std_vi
-
-    # Compute the anisotropic diffusion of the MIR band at three iteration levels
-    iter_list = [1, 2, 3]
-
-    wrap_get_aniso_diffs = dask.delayed(get_aniso_diffs)
-    aniso_std = dask.array.from_delayed(wrap_get_aniso_diffs(data_dict['VI1_DIFF_2'],
-                                                             iter_list),
-                                                     shape=data_dict['VI1_DIFF_2'].shape,
-                                                     dtype=np.single)
-
-    # Some additional fire screening tests
-    # Fire pixels will have a high anisotropic diffusion value compared to background
-    main_det_arr = (aniso_std > 0.01).astype(np.uint8)
-    # Fire pixels will also have a radiance compared to non-fire pixels in the MIR
-    main_det_arr = main_det_arr * (data_dict['VI1_DIFF_2'] > -0.15)
-    # Only select pixels that pass the Roberts + Wooster tests
-    main_det_arr = main_det_arr * data_dict['PFP']
-
-    main_det_arr = main_det_arr * (vi1_diff_stdm > vi1_rad_stdm * 1.5)
-    main_det_arr = main_det_arr * (mir_bt_stdm > 1.5)
-
-    kern = np.ones((3, 3))
-
-    fir_d_sum = convolve(main_det_arr, kern)
-    local_max = maximum_filter(data_dict['VI1_DIFF'], (3, 3))
-    tmp_out = (fir_d_sum == 1) * (data_dict['VI1_DIFF'] == local_max)
-
-    main_out = main_det_arr * (fir_d_sum > 1) + tmp_out * main_det_arr
-
-    main_out = main_out * xr.where(data_dict['MIR__BT'] > mean_mir + 2 * std_mir, main_out, 0)
-    main_out = main_out * xr.where(data_dict['BTD'] > mean_btd + 2.5, main_out, 0)
-    main_out = main_out * xr.where(data_dict['BTD'] > mean_btd + 2 * std_btd, main_out, 0)
-
-    fir_d_sum = convolve(main_out, kern)
-    local_max = maximum_filter(data_dict['MIR__BT'], (3, 3))
-    tmp_out = (fir_d_sum == 1) * (data_dict['MIR__BT'] == local_max)
-    main_out = main_out * (fir_d_sum > 1) + main_out * tmp_out
-
-    kern = np.array([[-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
-                     [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
-                     [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
-                     [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
-                     [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
-                     [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
-                     [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
-                     [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
-                     [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
-                     [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5],
-                     [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5]]) / 5
-
-    resx = np.abs(convolve(data_dict['MIR__BT'], kern))
-    kern = kern.T
-    resy = np.abs(convolve(data_dict['MIR__BT'], kern))
-    res = np.sqrt(resx * resx + resy * resy)
-    main_out = main_out * (res < 500)
-
-
-    delayed_local_stats = dask.delayed(get_local_stats)
-    locarr = delayed_local_stats(main_out,
-                                 data_dict['MIR__BT'],
-                                 data_dict['BTD'],
-                                 data_dict['VI1_DIFF'])
-    locarrn = dask.array.from_delayed(locarr,
-                                      shape=(data_dict['BTD'].shape[0], data_dict['BTD'].shape[1], 3),
-                                      dtype=np.single)
-    mirdif = locarrn[:, :, 0]
-    btddif = locarrn[:, :, 1]
-    viddif = locarrn[:, :, 2]
-
-    main_out = main_out * (btddif > 1) * (viddif > 0.04)
-    main_out = main_out * (data_dict['BTD'] > mean_btd + std_mir + std_btd)
-
-    kern = np.ones((3, 3))
-    fir_d_sum = convolve(main_out, kern)
-    local_max = maximum_filter(data_dict['VI1_DIFF'], (3, 3))
-    out5 = (fir_d_sum == 1) * (data_dict['VI1_DIFF'] == local_max)
-    main_out = main_out * (fir_d_sum > 1) + out5 * main_out
-
-    kern_ones = np.ones((3, 3))
-    fir_d_sum = convolve(main_out, kern_ones)
-    local_max = maximum_filter(data_dict['MIR__BT'], (3, 3))
-    out5 = (fir_d_sum == 1) * (data_dict['MIR__BT'] == local_max)
-    main_out = main_out * (fir_d_sum > 1) + out5 * main_out
-
-    # Absolute MIR BT threshold before a pixel is declared 'fire'
-    mir_abs_thresh = 350
-    # BTD thresh for adding back missing pixels
-    min_btd_addback = 2
-    max_btd_addback = 15
-
-    main_out_tmp = main_out + xr.where(data_dict['MIR__BT'] > mir_abs_thresh, 1, 0).astype(np.uint8)
-    main_out_tmp = xr.where(main_out_tmp > 0, 1, 0).astype(np.uint8)
-
-    fir_d_sum = convolve(main_out_tmp, kern_ones)
-
-    # Threshold for adding missing fire pixels, as the algorithm removes some pixels adjacent to existing detections
-    # We add back using the BTD weighted by the number of fire pixels adjacent to the candidate.
-    btd_addback_thresh = (9 - fir_d_sum) * (
-                8 / (max_btd_addback - min_btd_addback)) + min_btd_addback + mean_btd + std_btd
-    btd_addback_thresh = btd_addback_thresh * data_dict['PFP']
-
-    main_out = main_out_tmp + xr.where(data_dict['BTD'] > btd_addback_thresh, 1, 0).astype(np.uint8)
-    main_out = (xr.where(main_out > 0, 1, 0).astype(np.uint8) *
-                xr.where(data_dict['PFP'] > 0, 1, 0).astype(np.uint8) *
-                xr.where(fir_d_sum > 0, 1, 0).astype(np.uint8))
-
-    data_dict['mean_mir'] = mean_mir
-    data_dict['mean_btd'] = mean_btd
-    data_dict['std_btd'] = std_btd
-
-    data_dict['fire_dets'] = main_out
-
-    data_dict = calc_frp(data_dict)
-
-    return data_dict['fire_dets'], data_dict['frp_est']
