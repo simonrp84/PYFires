@@ -426,9 +426,14 @@ def get_mea_std_window(unsigned char[:,:] pfp_data,
     # Loop across all pixels in the image
     for x in range(x_0, x_1):
         for y in range(y_0, y_1):
-            if pfp_data[x + max_wsize, y + max_wsize] != 1:
-                outarr_view[:, x, y] = -999
-                continue
+            try:
+                if pfp_data[x + max_wsize, y + max_wsize] != 1:
+                    outarr_view[:, x, y] = -999
+                    continue
+            except:
+                print(pfp_data.shape)
+                print(x, y,  max_wsize)
+                raise
             for wsize in range(min_wsize, max_wsize+1):
                 # Determine coordinates of the current window
                 cur_win = get_curwindow_pos(x + max_wsize, y + max_wsize, wsize, scn_width, scn_height)

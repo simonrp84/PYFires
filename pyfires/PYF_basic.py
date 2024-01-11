@@ -452,7 +452,9 @@ def load_lsm(ds, xy_bbox=None, ll_bbox=None):
         prefix = 'P'
 
     # Build the expected LSM filename
-    lonstr = str(lon).replace('.', '')
+    lonstr = f'{abs(lon):05}'.replace('.', '')
+
+
     test_fname = f'{dname}/lsm/{satname}_{prefix}{lonstr}_LSM.tif'
     if os.path.exists(test_fname):
         iscn = Scene([test_fname], reader='generic_image')
