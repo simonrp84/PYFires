@@ -224,8 +224,14 @@ def compute_background_rad(indata,
     return bins[i]
 
 
-def run_dets(data_dict):
-    # Select potential fire pixels using the Roberts + Wooster Stage 1 + 2 tests
+def run_dets(data_dict, do_night=False):
+    """Run the fire detection routine.
+    Inputs:
+     - data_dict: A dict containing the input data and parameters for the detection.
+     - do_night: Whether to run the night detection routine. Default value: False
+    Returns:
+     - A binary mask of detected fire pixels and an estimate of their FRP.
+    """
 
     data_dict['PFP'] = stage1_tests(data_dict['MIR__BT'],
                                     data_dict['BTD'],
@@ -258,7 +264,6 @@ def run_dets(data_dict):
                            dtype=np.float32,
                            new_axis=0,
                            chunks=(12, data_dict['BTD'].chunks[0], data_dict['BTD'].chunks[1]))
-
 
     perc_good = outan[0, :, :]
     perc_pfp = outan[1, :, :]
@@ -367,12 +372,25 @@ def run_dets(data_dict):
                 xr.where(data_dict['PFP'] > 0, 1, 0).astype(np.uint8) *
                 xr.where(fir_d_sum > 0, 1, 0).astype(np.uint8))
 
+    # Store the output data
     data_dict['mean_mir'] = mean_mir
     data_dict['mean_btd'] = mean_btd
     data_dict['std_btd'] = std_btd
 
-    data_dict['fire_dets'] = main_out
+    # If user has requested night detection, run the night detection routine
+    if do_night:
+        night_dets, def_dets = run_basic_night_detection(data_dict['VI2_RAD'],
+                                                         data_dict['SZA'],
+                                                         data_dict['VI1_DIFF'],
+                                                         data_dict['PFP'])
 
+    def_fires = addback_definite_fires(data_dict)
+
+    main_out = night_dets + def_fires + main_out
+
+    data_dict['fire_dets'] = xr.where(main_out > 0, 1, 0).astype(np.uint8)
+
+    # Compute the FRP estimate
     data_dict = calc_frp(data_dict)
 
     return data_dict['fire_dets'], data_dict['frp_est']
@@ -391,7 +409,6 @@ def do_windowed(pfp,
                 lsm_val=PYFc.lsm_land_val,
                 perc_thresh=PYFc.win_frac,
                 block_info=None):
-
     """Wrapper for the windowed statistics function.
     Inputs:
     - pfp: The PFP data
@@ -426,7 +443,27 @@ def do_windowed(pfp,
     return outarr
 
 
-# NOTE: This function is not currently used in the detection algorithm and may be outdated / non-functional
+def addback_definite_fires(in_dict,
+                           glint_thresh=10,
+                           btd_thresh=45,
+                           lwi_thresh=260,):
+    """Add back definite fires to the fire detection mask.
+    In some cases, usually due to a poor background window (such as with many other fire pixels)
+    the algorithm may not detect a pixel that is a definite fire. This function adds back those pixels.
+    Inputs:
+    - in_dict: The input dict containing the fire detection mask and the definite fire mask.
+    - glint_thresh: The threshold for sunglint angle. Pixels with glint angle lower than this are ignored.
+    - btd_thresh: The threshold for the BTD to be considered a fire pixel. Default value: 45 K
+    - lwi_thresh: The threshold for the LWIR BT to be considered a fore pixel. Default value: 260 K
+    Returns:
+    - The updated fire detection mask.
+    """
+    out_dets = xr.where(in_dict['BTD'] >= btd_thresh, 1, 0)
+    out_dets = xr.where(in_dict['LW1__BT'] >= lwi_thresh, out_dets, 0)
+    return xr.where(in_dict['glint_ang'] >= glint_thresh, out_dets, 0)
+
+
+
 def run_basic_night_detection(in_vi2_rad,
                               in_sza,
                               in_vid,

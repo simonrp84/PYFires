@@ -19,10 +19,10 @@
 
 """Basic reading functions for data preparation."""
 import dask.array
-from satpy.modifiers.angles import get_satellite_zenith_angle
+from satpy.modifiers.angles import _get_sensor_angles
 from dask_image.ndfilters import convolve
 import pyfires.PYF_Consts as PYFc
-from numba import njit, prange, jit
+from numba import prange
 from satpy import Scene
 
 from pyspectral.rsr_reader import RelativeSpectralResponse
@@ -212,7 +212,8 @@ def compute_fire_datasets(indata_dict, irrad_dict, bdict, ref_band):
                               indata_dict['MIR__BT'] + indata_dict['LW1__BT'])
 
     # Get the angles associated with the Scene
-    indata_dict['SZA'], indata_dict['VZA'], indata_dict['pix_area'] = get_angles(ref_band)
+    indata_dict['SZA'], indata_dict['VZA'], indata_dict['RAA'], indata_dict['pix_area'] = get_angles(ref_band)
+    indata_dict['glint_ang'] = calc_glint_ang(indata_dict)
 
     # Compute the adjusted VI difference, with reduced daytime VIS component
     adj_vid = vid_adjust_sza(indata_dict['VI1_DIFF'], indata_dict['SZA'])
@@ -319,6 +320,14 @@ def get_aniso_diffs_bk(vid_ds, niter_list):
     return np.nanstd(main_n, axis=2)
 
 
+def calc_glint_ang(indi):
+    """Calculate the glint angle for a dataset."""
+
+    gang = np.cos(np.deg2rad(indi['SZA'])) * np.cos(np.deg2rad(indi['VZA']))
+    gang = gang - np.sin(np.deg2rad(indi['SZA'])) * np.sin(np.deg2rad(indi['VZA'])) * np.cos(np.deg2rad(indi['RAA']))
+    return np.rad2deg(np.arccos(gang))
+
+
 def get_angles(ref_data):
     """Compute the solar and viewing zenith angles and the pixel size for a dataset.
     Inputs:
@@ -332,7 +341,11 @@ def get_angles(ref_data):
     saa, sza = _get_sun_angles(ref_data)
 
     # Satellite zenith
-    vza = get_satellite_zenith_angle(ref_data)
+    vaa, vza = _get_sensor_angles(ref_data)
+
+    # Relative azimuth
+    raa = np.absolute(saa - vaa)
+    raa = np.minimum(raa, 360 - raa)
 
     # Compute the pixel area
     # Pixel sizes are in meters, convert to km
@@ -342,7 +355,8 @@ def get_angles(ref_data):
     pix_area = pix_size / np.cos(np.deg2rad(vza))
 
     # Return values, casting to float32 to save memory.
-    return sza.data.astype(np.float32), vza.data.astype(np.float32), pix_area.data.astype(np.float32)
+    return (sza.data.astype(np.float32), vza.data.astype(np.float32),
+            raa.data.astype(np.float32), pix_area.data.astype(np.float32))
 
 
 def initial_load(infiles_l1,
@@ -389,6 +403,7 @@ def initial_load(infiles_l1,
 
 
 def sort_l1(vi1_raddata,
+            vi2_raddata,
             mir_raddata,
             lw1_raddata,
             mir_btdata,
@@ -397,6 +412,7 @@ def sort_l1(vi1_raddata,
             do_load_lsm=True):
 
     data_dict = {'VI1_RAD': vi1_raddata.data,
+                 'VI2_RAD': vi2_raddata.data,
                  'MIR_RAD': mir_raddata.data,
                  'LW1_RAD': lw1_raddata.data,
                  'MIR__BT': mir_btdata.data,
