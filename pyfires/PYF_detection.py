@@ -413,6 +413,11 @@ def do_windowed(pfp,
                 max_wsize=PYFc.max_win_size,
                 lsm_val=PYFc.lsm_land_val,
                 perc_thresh=PYFc.win_frac,
+                mir_minlat_thresh=PYFc.mir_minlat_thresh,
+                mir_maxlat_thresh=PYFc.mir_maxlat_thresh,
+                mir_max_thresh=PYFc.mir_max_thresh,
+                btd_max_thresh=PYFc.btd_max_thresh,
+                lwi_min_thres=PYFc.lwi_min_thresh,
                 block_info=None):
     """Wrapper for the windowed statistics function.
     Inputs:
@@ -443,7 +448,9 @@ def do_windowed(pfp,
     outarr = np.zeros((12, xs, ys))
     # run the windowed stats cython function
     outarr[:, :, :] = get_mea_std_window(pfp, vis_rad, lw_bt, btd, mir_bt, vid, lsm, lats, xs, ys,
-                                         lsm_val, min_wsize, max_wsize, perc_thresh)
+                                         lsm_val, min_wsize, max_wsize, perc_thresh,
+                                         mir_minlat_thresh, mir_maxlat_thresh, mir_max_thresh,
+                                         btd_max_thresh, lwi_min_thres)
 
     return outarr
 

@@ -38,18 +38,28 @@ def get_local_stats(procpix, btd, vid):
      - diffarr: The average differences between the pixel and its neighbours for
                 each of the three input arrays: mir, btd, vid)  (NxMx2 array)
     """
-    res = _get_local_stats(procpix, btd, vid)
 
-    return res
+    cdef int scn_width = int(procpix.shape[0])
+    cdef int scn_height = int(procpix.shape[1])
+
+    cdef np.ndarray[dtype=np.float32_t, ndim=3] outarr = np.zeros((scn_width, scn_height, 2), dtype=np.float32)
+    cdef np.float32_t[:, :, ::1] outarr_view = outarr
+
+    _get_local_stats(procpix, btd, vid, outarr_view, scn_width, scn_height)
+
+    return outarr
 
 
 @cython.boundscheck(False)
 @cython.cdivision(True)
 @cython.wraparound(False)
 @cython.initializedcheck(False)
-cdef _get_local_stats(unsigned char[:,:] proc_pix,
+cdef void _get_local_stats(unsigned char[:,:] proc_pix,
                       float [:, :] btd,
-                      float [:, :] vid):
+                      float [:, :] vid,
+                      np.float32_t[:, :, :] outarr,
+                      int scn_width,
+                      int scn_height) noexcept nogil:  #noqa
     """Compute the local statistics for the current pixel.
     Inputs:
      - proc_pix: A binary mask indicating which pixels to process (NxM array)
@@ -66,12 +76,6 @@ cdef _get_local_stats(unsigned char[:,:] proc_pix,
 
     cdef float btdif = 0
     cdef float viddif = 0
-
-    cdef int scn_width = int(proc_pix.shape[0])
-    cdef int scn_height = int(proc_pix.shape[1])
-
-    cdef np.ndarray[dtype=np.float32_t, ndim=3] outarr = np.zeros((scn_width, scn_height, 2), dtype=np.single)
-    cdef float[:,:, ::1] outarr_view = outarr
 
     for xpos in range(1, scn_width - 1):
         for ypos in range(1, scn_height - 1):
@@ -123,8 +127,6 @@ cdef _get_local_stats(unsigned char[:,:] proc_pix,
             else:
                 outarr[xpos, ypos, 0] = outarr[xpos, ypos, 0] / float(n_good)
                 outarr[xpos, ypos, 1] = outarr[xpos, ypos, 1] / float(n_good)
-
-    return outarr
 
 
 @cython.boundscheck(False)
@@ -208,12 +210,12 @@ cdef get_window_mea_stdv(int winsize,
                          float cen__mir,
                          float cen__btd,
                          float cen__lat,
-                         unsigned char lsm_land_val = PYFc.lsm_land_val,
-                         float mir_minlat_thresh = PYFc.mir_minlat_thresh,
-                         float mir_maxlat_thresh = PYFc.mir_maxlat_thresh,
-                         float mir_max_thresh = PYFc.mir_max_thresh,
-                         float btd_max_thresh = PYFc.btd_max_thresh,
-                         float lwi_min_thresh = PYFc.lwi_min_thresh,
+                         unsigned char lsm_land_val,
+                         float mir_minlat_thresh,
+                         float mir_maxlat_thresh,
+                         float mir_max_thresh,
+                         float btd_max_thresh,
+                         float lwi_min_thresh,
                          ):
     cdef int arrsize_x = winsize + winsize + 1
     cdef int arrsize_y = winsize + winsize + 1
@@ -395,10 +397,15 @@ def get_mea_std_window(unsigned char[:,:] pfp_data,
                        float[:,:] lats,
                        int scn_width,
                        int scn_height,
-                       unsigned char lsm_land_val=PYFc.lsm_land_val,
-                       int min_wsize=PYFc.min_win_size,
-                       int max_wsize=PYFc.max_win_size,
-                       float perc_thresh=PYFc.win_frac):
+                       unsigned char lsm_land_val,
+                       int min_wsize,
+                       int max_wsize,
+                       float perc_thresh,
+                       mir_minlat_thresh,
+                       mir_maxlat_thresh,
+                       mir_max_thresh,
+                       btd_max_thresh,
+                       lwi_min_thresh):
 
     cdef int x_0 = 0
     cdef int x_1 = scn_width
@@ -466,7 +473,12 @@ def get_mea_std_window(unsigned char[:,:] pfp_data,
                                           cen_mir,
                                           cen_btd,
                                           cen_lon,
-                                          lsm_land_val)
+                                          lsm_land_val,
+                                          mir_minlat_thresh,
+                                          mir_maxlat_thresh,
+                                          mir_max_thresh,
+                                          btd_max_thresh,
+                                          lwi_min_thresh)
                 if res[0] > perc_thresh or res[1] > perc_thresh + 0.1:
                     break
 
@@ -487,5 +499,12 @@ def get_mea_std_window(unsigned char[:,:] pfp_data,
 
     return outarr
 
-def py_get_window_mea_stdv(wsize, cvis, clwi, cbtd, cmir, cvid, clsm, cen_mir, cen_btd, cen_lon, lsm_land_val):
-    return get_window_mea_stdv(wsize, cvis, clwi, cbtd, cmir, cvid, clsm, cen_mir, cen_btd, cen_lon, lsm_land_val)
+def py_get_window_mea_stdv(wsize, cpfp, cvis, clwi, cbtd, cmir, cvid, clsm, cen_mir, cen_btd, cen_lon, lsm_land_val):
+    mir_minlat_thresh = PYFc.mir_minlat_thresh
+    mir_maxlat_thresh = PYFc.mir_maxlat_thresh
+    mir_max_thresh = PYFc.mir_max_thresh
+    btd_max_thresh = PYFc.btd_max_thresh
+    lwi_min_thresh = PYFc.lwi_min_thresh
+
+    return get_window_mea_stdv(wsize, cpfp, cvis, clwi, cbtd, cmir, cvid, clsm, cen_mir, cen_btd, cen_lon, lsm_land_val,
+                               mir_minlat_thresh, mir_maxlat_thresh, mir_max_thresh, btd_max_thresh, lwi_min_thresh)
