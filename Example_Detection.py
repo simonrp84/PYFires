@@ -23,7 +23,7 @@
 # actually slow down processing, so here we limit the cores it can use.
 # For more info, see: https://satpy.readthedocs.io/en/stable/faq.html#why-is-satpy-slow-on-my-powerful-machine
 import dask
-dask.config.set(num_workers=8)
+dask.config.set(num_workers=20)
 
 # Set some satpy configuration options for data caching.
 # We cache the lats / lons as they should not change when processing a time series.
@@ -35,7 +35,7 @@ satpy.config.set({'cache_sensor_angles': False})
 satpy.config.set({'cache_lonlats': True})
 
 # Final imports
-from pyfires.PYF_basic import initial_load, save_output, set_default_values
+from pyfires.PYF_basic import initial_load, save_output_csv, save_output, set_default_values
 from pyfires.PYF_detection import run_dets
 import pyfires.PYF_Consts as PYFc
 from satpy import Scene
@@ -51,79 +51,81 @@ from datetime import datetime
 import warnings
 warnings.filterwarnings('ignore')
 
+
 def main():
-    # Set the top-level input directory (containing ./HHMM/ subdirs following NOAA AWS format)
-    input_file_dir = 'D:/sat_data/ahi_main/in/'
-    # Set the output directory where FRP images will be saved.
-    output_img_dir = 'D:/sat_data/ahi_main/out/'
+    with dask.config.set({"array.chunk-size": "20MiB"}):
+        # Set the top-level input directory (containing ./HHMM/ subdirs following NOAA AWS format)
+        input_file_dir = 'D:/sat_data/ahi_main/in/'
+        # Set the output directory where FRP images will be saved.
+        output_img_dir = 'D:/sat_data/ahi_main/out/'
 
-    # Set an X-Y bounding box for cropping the input data.
-    bbox = (-1600000, -2770000, 690000, -1040000)
+        # Set an X-Y bounding box for cropping the input data.
+        #bbox = (-1600000, -2770000, 690000, -1040000)
+        bbox = None
 
-    # Search for input timeslots.
-    idirs = glob(f'{input_file_dir}/*1110*')
-    idirs.sort()
+        # Search for input timeslots.
+        idirs = glob(f'{input_file_dir}/*1110*')
+        idirs.sort()
 
-    # Set up a dictionary mapping band type names to the AHI channel names.
-    # 'vi1_band' is the ~0.64 micron visible channel.
-    # 'mir_band' is the ~3.9 micron mid-infrared channel.
-    # 'lwi_band' is the ~10.4 micron long-wave infrared channel.
-    bdict = {'vi1_band': 'B03',
-             'mir_band': 'B07',
-             'lwi_band': 'B13'}
+        # Set up a dictionary mapping band type names to the AHI channel names.
+        # 'vi1_band' is the ~0.64 micron visible channel.
+        # 'mir_band' is the ~3.9 micron mid-infrared channel.
+        # 'lwi_band' is the ~10.4 micron long-wave infrared channel.
+        bdict = {'vi1_band': 'B03',
+                 'vi2_band': 'B06',
+                 'mir_band': 'B07',
+                 'lwi_band': 'B13'}
 
-    # Loop over timeslots and process data...
-    for cdir in tqdm(idirs):
-        if cdir == idirs[0]:
-            print("\n")
+        # Loop over timeslots and process data...
+        for cdir in tqdm(idirs):
+            if cdir == idirs[0]:
+                print("\n")
 
-        st = datetime.utcnow()
-        # Find files and ensure we have enough to process.
-        ifiles_l15 = glob(cdir+'/*.DAT')
-        if len(ifiles_l15) < 40:
-            continue
+            st = datetime.utcnow()
+            # Find files and ensure we have enough to process.
+            ifiles_l15 = glob(cdir+'/*.DAT')
+            if len(ifiles_l15) < 40:
+                continue
 
-        # Create a simple Scene to simplift saving the results.
-        scn = Scene(reader='ahi_hsd', filenames=ifiles_l15)
-        scn.load(['B07'])
-        if bbox:
-            scn = scn.crop(xy_bbox=bbox)
+            # Create a simple Scene to simplift saving the results.
+            scn = Scene(reader='ahi_hsd', filenames=ifiles_l15)
+            scn.load(['B07'])
+            if bbox:
+                scn = scn.crop(xy_bbox=bbox)
 
-        # Get timeslot from filename
-        curf = ifiles_l15[0]
-        pos = curf.find('HS_H')
-        dtstr = curf[pos+7:pos+7+13]
+            # Get timeslot from filename
+            curf = ifiles_l15[0]
+            pos = curf.find('HS_H')
+            dtstr = curf[pos+7:pos+7+13]
 
-        # Set output filename
-        outf1 = f'{output_img_dir}/pfp_{dtstr}00.tif'
-        outf2 = f'{output_img_dir}/t1_{dtstr}00.tif'
-        outf3 = f'{output_img_dir}/t2_{dtstr}00.tif'
+            # Set output filename
+            outf = f'{output_img_dir}/fires_{dtstr}00.tif'
 
-        # Skip files we've already processed
-        #if not os.path.isfile(outf1) and not os.path.isfile(outf2):
-        if True:
-            # Load the initial data.
-            # Here we don't load the land/sea mask as we're cropping and this is
-            # not (yet) supported by pyfires. For full disk processing you will
-            # likely get more accurate results by enabling the land/sea mask.
-            data_dict = initial_load(ifiles_l15,        # Input file list
-                                     'ahi_hsd',         # Satpy reader name
-                                     bdict,             # Band mapping dict
-                                     do_load_lsm=False, # Don't load land-sea mask
-                                     bbox=bbox)         # Bounding box for cropping
+            # Skip files we've already processed
+            #if not os.path.isfile(outf1) and not os.path.isfile(outf2):
+            if True:
+                # Load the initial data.
+                # Here we don't load the land/sea mask as we're cropping and this is
+                # not (yet) supported by pyfires. For full disk processing you will
+                # likely get more accurate results by enabling the land/sea mask.
+                data_dict = initial_load(ifiles_l15,        # Input file list
+                                         'ahi_hsd',         # Satpy reader name
+                                         bdict,             # Band mapping dict
+                                         do_load_lsm=True,  # Don't load land-sea mask
+                                         bbox=bbox)         # Bounding box for cropping
 
-            # Set up the constants used during processing
-            data_dict = set_default_values(data_dict)
+                # Set up the constants used during processing
+                data_dict = set_default_values(data_dict)
 
-            # Run the detection algorithm. This returns a boolean mask of the
-            # fire detections as well as the actual fire radiative power data.
-            fire_dets, frp_data = run_dets(data_dict)
-            save_output(scn, frp_data, 'fire_dets', outf2, ref='B07')
+                # Run the detection algorithm. This returns a boolean mask of the
+                # fire detections as well as the actual fire radiative power data.
+                data_dict = run_dets(data_dict)
+                save_output(scn, data_dict['frp_est'], 'frp_est', outf, ref='B07')
+                #save_output_csv(data_dict, outf)
 
-        en = datetime.utcnow()
+            en = datetime.utcnow()
 
-        print((en-st).total_seconds())
-        #break
+            print((en-st).total_seconds())
 
 
 if __name__ == "__main__":

@@ -278,6 +278,9 @@ def run_dets(data_dict, do_night=False):
     mean_vid = outan[10, :, :]
     std_vid = outan[11, :, :]
 
+    data_dict['nwin'] = n_winpix
+    data_dict['nwater'] = n_waterpix
+
     # Define some test thresholds for further selection of potential fire pixels
     vi1_diff_stdm = (data_dict['VI1_DIFF'] - mean_vid) / std_vid
     mir_bt_stdm = (data_dict['MIR__BT'] - mean_mir) / std_mir
@@ -376,6 +379,7 @@ def run_dets(data_dict, do_night=False):
     data_dict['mean_mir'] = mean_mir
     data_dict['mean_btd'] = mean_btd
     data_dict['std_btd'] = std_btd
+    data_dict['std_mir'] = std_mir
 
     # If user has requested night detection, run the night detection routine
     if do_night:
@@ -383,17 +387,18 @@ def run_dets(data_dict, do_night=False):
                                                          data_dict['SZA'],
                                                          data_dict['VI1_DIFF'],
                                                          data_dict['PFP'])
+        main_out = night_dets + main_out
 
     def_fires = addback_definite_fires(data_dict)
 
-    main_out = night_dets + def_fires + main_out
+    main_out = def_fires + main_out
 
     data_dict['fire_dets'] = xr.where(main_out > 0, 1, 0).astype(np.uint8)
 
     # Compute the FRP estimate
     data_dict = calc_frp(data_dict)
 
-    return data_dict['fire_dets'], data_dict['frp_est']
+    return data_dict
 
 
 def do_windowed(pfp,
@@ -531,3 +536,58 @@ def run_basic_night_detection(in_vi2_rad,
     out_dets = xr.where(in_sza > opts['sza_thresh'], out_dets, 0)
 
     return out_dets, def_dets
+
+
+def do_stage5(indict, nig_sza=60.):
+    """Compute the confidence value for each potential fire pixel.
+    Inputs:
+    - indict: The input data dictionary.
+    - nig_sza: SZA threshold for night pixels.
+    Returns:
+    - outarr_conf: An array of identical shape to the input satellite imagery containing confidence values.
+    - outarr_frp: An array of identical shape to the input satellite imagery containing estimated FRP values.
+    """
+
+    sza_thr = xr.where(indict['SZA'] > nig_sza, nig_sza, indict['SZA'])
+
+    z4 = (indict['MIR__BT'] - indict['mean_mir']) / indict['std_mir']
+    zdt = (indict['BTD'] - indict['mean_btd']) / indict['std_btd']
+
+    min_c1_day = 287
+    min_c1_nig = 280
+    max_c1_day = 327
+    max_c1_nig = 310
+
+    min_c2 = 0.9
+    max_c2 = 6.
+
+    min_c3_day = 2
+    min_c3_nig = 1.5
+    max_c3_day = 6
+    max_c3_nig = 5
+
+    c1_grad = (min_c1_nig - min_c1_day) / nig_sza
+    min_c1 = min_c1_day + c1_grad * sza_thr
+    c1_grad = (max_c1_nig - max_c1_day) / nig_sza
+    max_c1 = max_c1_day + c1_grad * sza_thr
+
+    c3_grad = (min_c3_nig - min_c3_day) / nig_sza
+    min_c3 = min_c3_day + c3_grad * sza_thr
+    c3_grad = (max_c3_nig - max_c3_day) / nig_sza
+    max_c3 = max_c3_day + c3_grad * sza_thr
+
+    c1 = comp_stat(indict['MIR__BT'], min_c1, max_c1)
+    c2 = comp_stat(z4, min_c2, max_c2)
+    c3 = comp_stat(zdt, min_c3, max_c3)
+
+    c4 = 1 - comp_stat(indict['nwater'] / (indict['nwin'] / 2.), 0, 1)
+
+    return np.power(c1 * c2 * c3 * c4, 1./4.)
+
+
+def comp_stat(x, a, b):
+    """Function for the stage 5 confidence assignment (eqn 8 in Roberts)."""
+    out = (x - a) / (b - a)
+    out = xr.where(x < a, 0, out)
+    out = xr.where(x > b, 1, out)
+    return out

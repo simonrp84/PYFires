@@ -21,9 +21,9 @@
 import dask.array
 from satpy.modifiers.angles import _get_sensor_angles
 from dask_image.ndfilters import convolve
+from satpy import Scene, DataQuery
 import pyfires.PYF_Consts as PYFc
 from numba import prange
-from satpy import Scene
 
 from pyspectral.rsr_reader import RelativeSpectralResponse
 from satpy.modifiers.angles import _get_sun_angles
@@ -38,15 +38,15 @@ def set_default_values(indict):
     indict['max_wsize'] = PYFc.max_win_size  # Maximum window size for windowed statistics
     indict['perc_thresh'] = PYFc.win_frac  # Percentage of good pixels in window for stats to be selected
     indict['lsm_val'] = PYFc.lsm_land_val  # Land-sea mask value for land
-    indict['aniso_thresh'] = PYFc.aniso_thresh   # Anisotropy threshold for anisotropic diffusion test
+    indict['aniso_thresh'] = PYFc.aniso_thresh  # Anisotropy threshold for anisotropic diffusion test
     indict['vid2_thresh'] = PYFc.vid2_thresh  # Threshold for MIR - VIS - LWIR test
-    indict['ksizes'] = PYFc.ksizes   # Kernel sizes for stage 1 tests
-    indict['vid_stdm_mult'] = PYFc.vid_std_mult   # Multiplier factor for the VID radiance threshold
-    indict['mir_stdm_mult'] = PYFc.mir_std_mult   # Multiplier factor for the MIR radiance threshold
-    indict['kern_test_size'] = PYFc.kern_test_size    # Kernel size for the second stage kernel tests
+    indict['ksizes'] = PYFc.ksizes  # Kernel sizes for stage 1 tests
+    indict['vid_stdm_mult'] = PYFc.vid_std_mult  # Multiplier factor for the VID radiance threshold
+    indict['mir_stdm_mult'] = PYFc.mir_std_mult  # Multiplier factor for the MIR radiance threshold
+    indict['kern_test_size'] = PYFc.kern_test_size  # Kernel size for the second stage kernel tests
     indict['iter_list'] = PYFc.aniso_iters  # Number of anisotropic diffusion iterations to perform
     indict['kern_thresh_btd'] = PYFc.kern_thresh_btd  # Threshold for the BTD kernel test
-    indict['kern_thresh_sza_adj'] = PYFc.kern_thresh_sza_adj # Threshold for the BTD kernel test
+    indict['kern_thresh_sza_adj'] = PYFc.kern_thresh_sza_adj  # Threshold for the BTD kernel test
     indict['btddif_thresh'] = PYFc.btddif_thresh  # Threshold for the BTD difference test
     indict['viddif_thresh'] = PYFc.viddif_thresh  # Threshold for the VID difference test
     indict['mir_abs_thresh'] = PYFc.mir_abs_thresh  # Threshold for the MIR absolute test
@@ -67,7 +67,7 @@ def vid_adjust_sza(in_vid, in_sza,
                    min_v=PYFc.sza_min_v,
                    max_v=PYFc.sza_max_v,
                    slo_str=PYFc.sza_slo_str,
-                   slo_rise=PYFc.sza_slo_rise ):
+                   slo_rise=PYFc.sza_slo_rise):
     """Adjust the VI Difference based on solar zenith angle.
     Inputs:
     - in_vid: The VI Difference data
@@ -124,6 +124,28 @@ def save_output(inscn, indata, name, fname, ref='B07'):
     inscn[name].attrs['name'] = name
     inscn[name].data = indata
     inscn.save_dataset(name, filename=fname, enhance=False, dtype=np.float32, fill_value=0)
+
+
+def save_output_csv(indict, fname):
+    """Save the output data to a CSV file."""
+    minidict = {'LATS': indict['LATS'],
+                'LONS': indict['LONS'],
+                'frp_est': indict['frp_est'],
+                'SZA': indict['SZA'],
+                'MIR__BT': indict['MIR__BT'],
+                'LW1__BT': indict['LW1__BT']}
+
+    minidict = dask.array.compute(minidict)[0]
+    with open(fname, 'w') as f:
+        f.write('lat,lon,frp,sza,mir_bt,lw_bt\n')
+        xs, ys = np.where(minidict["frp_est"] > 0)
+        for x, y in zip(xs, ys):
+            f.write(f'{minidict["LATS"][x, y]},'
+                    f'{minidict["LONS"][x, y]},'
+                    f'{minidict["frp_est"][x, y]},'
+                    f'{minidict["SZA"][x, y]},'
+                    f'{minidict["MIR__BT"][x, y]},'
+                    f'{minidict["LW1__BT"][x, y]}\n')
 
 
 def bt_to_rad(wvl, bt, d0, d1, d2):
@@ -209,7 +231,7 @@ def compute_fire_datasets(indata_dict, irrad_dict, bdict, ref_band):
     indata_dict['VI1_DIFF'] = indata_dict[mir_noir_name] - indata_dict['VI1_RAD']
 
     indata_dict['mi_ndfi'] = (indata_dict['MIR__BT'] - indata_dict['LW1__BT']) / (
-                              indata_dict['MIR__BT'] + indata_dict['LW1__BT'])
+            indata_dict['MIR__BT'] + indata_dict['LW1__BT'])
 
     # Get the angles associated with the Scene
     indata_dict['SZA'], indata_dict['VZA'], indata_dict['RAA'], indata_dict['pix_area'] = get_angles(ref_band)
@@ -224,7 +246,8 @@ def compute_fire_datasets(indata_dict, irrad_dict, bdict, ref_band):
     lons, lats = ref_band.attrs['area'].get_lonlats_dask()
     indata_dict['LATS'] = lats.astype(np.float32)
     indata_dict['LATS'] = indata_dict['LATS'].rechunk(chunks=ref_band.chunks)
-
+    indata_dict['LONS'] = lons.astype(np.float32)
+    indata_dict['LONS'] = indata_dict['LONS'].rechunk(chunks=ref_band.chunks)
 
     final_bnames = ['VI1_RAD', 'MIR_RAD', 'LW1_RAD', 'MIR__BT', 'LW1__BT',
                     'MIR_RAD_NO_IR', 'VI1_DIFF', 'mi_ndfi']
@@ -254,16 +277,15 @@ def py_aniso(in_img, pxv, nxv, pyv, nyv,
     out_img[:, :] = in_img[:, :]
 
     for ii in range(0, niter):
-
         pxv[1:-1, :] = np.abs(out_img[2:, :] - out_img[1:-1, :])
         nxv[1:-1, :] = np.abs(out_img[0:-2, :] - out_img[1:-1, :])
         pyv[:, 1:-1] = np.abs(out_img[:, 2:] - out_img[:, 1:-1])
         nyv[:, 1:-1] = np.abs(out_img[:, 0:-2] - out_img[:, 1:-1])
 
-        pxv = pxv * np.exp(-pxv**2 / kappa**2)
-        nxv = nxv * np.exp(-nxv**2 / kappa**2)
-        pyv = pyv * np.exp(-pyv**2 / kappa**2)
-        nyv = nyv * np.exp(-nyv**2 / kappa**2)
+        pxv = pxv * np.exp(-pxv ** 2 / kappa ** 2)
+        nxv = nxv * np.exp(-nxv ** 2 / kappa ** 2)
+        pyv = pyv * np.exp(-pyv ** 2 / kappa ** 2)
+        nyv = nyv * np.exp(-nyv ** 2 / kappa ** 2)
 
         out_img = out_img + gamma * (pxv + nxv + pyv + nyv)
 
@@ -279,7 +301,7 @@ def get_aniso_diffs(vid_ds, niter_list):
      - out_ds: The anisotropic diffusion of the VI Difference data.
     """
 
-    out_list = [None]*(len(niter_list)+1)
+    out_list = [None] * (len(niter_list) + 1)
     out_list[0] = vid_ds
 
     pxv = np.zeros_like(vid_ds)
@@ -288,9 +310,9 @@ def get_aniso_diffs(vid_ds, niter_list):
     nyv = np.zeros_like(vid_ds)
 
     for niter in range(0, len(niter_list)):
-        out_list[niter+1] = py_aniso(out_list[niter], pxv, nxv, pyv, nyv,
-                                     niter=niter_list[niter] - niter_list[niter-1],
-                                     kappa=1)
+        out_list[niter + 1] = py_aniso(out_list[niter], pxv, nxv, pyv, nyv,
+                                       niter=niter_list[niter] - niter_list[niter - 1],
+                                       kappa=1)
 
     main_n = np.dstack(out_list)
     return np.nanstd(main_n, axis=2)
@@ -314,7 +336,7 @@ def get_aniso_diffs_bk(vid_ds, niter_list):
     nyv = np.zeros_like(vid_ds)
 
     for niter in prange(0, len(niter_list)):
-        out_list[niter+1] = py_aniso(vid_ds, pxv, nxv, pyv, nyv, niter=niter_list[niter], kappa=1)
+        out_list[niter + 1] = py_aniso(vid_ds, pxv, nxv, pyv, nyv, niter=niter_list[niter], kappa=1)
 
     main_n = np.dstack(out_list)
     return np.nanstd(main_n, axis=2)
@@ -363,7 +385,7 @@ def initial_load(infiles_l1,
                  l1_reader,
                  bdict,
                  do_load_lsm=True,
-                 bbox=None,):
+                 bbox=None, ):
     """Read L1 data from disk based on user preferences.
     Inputs:
      - infiles_l1: List of L1 files to read.
@@ -375,29 +397,31 @@ def initial_load(infiles_l1,
     Returns:
      - scn: A satpy Scene containing the data read from disk.
     """
-    # Check that user has provided requested info.
-    blist = []
-    for item in bdict:
-        blist.append(bdict[item])
+
+    # Construct queries
+    vi1_rad = DataQuery(name=bdict['vi1_band'], calibration="radiance")
+    vi2_rad = DataQuery(name=bdict['vi2_band'], calibration="radiance")
+    mir_rad = DataQuery(name=bdict['mir_band'], calibration="radiance")
+    mir_bt = DataQuery(name=bdict['mir_band'], calibration="brightness_temperature")
+    lwi_rad = DataQuery(name=bdict['lwi_band'], calibration="radiance")
+    lwi_bt = DataQuery(name=bdict['lwi_band'], calibration="brightness_temperature")
+
+    blist = [vi1_rad, vi2_rad, mir_rad, lwi_rad, mir_bt, lwi_bt]
 
     scn = Scene(infiles_l1, reader=l1_reader)
     scn.load(blist, calibration='radiance', generate=False)
 
-    scn2 = Scene(infiles_l1, reader=l1_reader)
-    scn2.load([bdict['lwi_band'], bdict['mir_band']], generate=False)
-
     if bbox:
         scn = scn.crop(xy_bbox=bbox)
-        scn2 = scn2.crop(xy_bbox=bbox)
 
     scnr = scn.resample(scn.coarsest_area(), resampler='native')
-    scnr2 = scn2.resample(scn.coarsest_area(), resampler='native')
 
-    return sort_l1(scnr[bdict['vi1_band']],
-                   scnr[bdict['mir_band']],
-                   scnr[bdict['lwi_band']],
-                   scnr2[bdict['mir_band']],
-                   scnr2[bdict['lwi_band']],
+    return sort_l1(scnr[vi1_rad],
+                   scnr[vi2_rad],
+                   scnr[mir_rad],
+                   scnr[lwi_rad],
+                   scnr[mir_bt],
+                   scnr[lwi_bt],
                    bdict,
                    do_load_lsm=do_load_lsm)
 
@@ -410,17 +434,16 @@ def sort_l1(vi1_raddata,
             lw1_btdata,
             bdict,
             do_load_lsm=True):
-
     data_dict = {'VI1_RAD': vi1_raddata.data,
                  'VI2_RAD': vi2_raddata.data,
                  'MIR_RAD': mir_raddata.data,
                  'LW1_RAD': lw1_raddata.data,
                  'MIR__BT': mir_btdata.data,
-                 'LW1__BT': lw1_btdata.data}
+                 'LW1__BT': lw1_btdata.data,
+                 'platform_name': vi1_raddata.attrs['platform_name'],
+                 'sensor': vi1_raddata.attrs['sensor']}
 
     # Get common attributes
-    data_dict['platform_name'] = vi1_raddata.attrs['platform_name']
-    data_dict['sensor'] = vi1_raddata.attrs['sensor']
 
     # Compute the solar irradiance values
     irrad_dict = _get_band_solar(data_dict, bdict)
@@ -433,7 +456,7 @@ def sort_l1(vi1_raddata,
         data_dict['LSM'] = load_lsm(vi1_raddata)
     else:
         lsm = dask.array.zeros_like(vi1_raddata)
-        lsm[:,:] = PYFc.lsm_land_val
+        lsm[:, :] = PYFc.lsm_land_val
         data_dict['LSM'] = lsm.astype(np.uint8)
 
     return data_dict
@@ -470,7 +493,6 @@ def load_lsm(ds, xy_bbox=None, ll_bbox=None):
     # Build the expected LSM filename
     lonstr = f'{abs(lon):05}'.replace('.', '')
 
-
     test_fname = f'{dname}/lsm/{satname}_{prefix}{lonstr}_LSM.tif'
     if os.path.exists(test_fname):
         iscn = Scene([test_fname], reader='generic_image')
@@ -495,66 +517,6 @@ def load_lsm(ds, xy_bbox=None, ll_bbox=None):
     lsm_data.coords['y'] = ds.coords['y']
 
     return lsm_data.data
-
-
-def comp_stat(x, a, b):
-    """Function for the stage 5 confidence assignment (eqn 8 in Roberts)."""
-    out = (x - a) / (b - a)
-    out = xr.where(x < a, 0, out)
-    out = xr.where(x > b, 1, out)
-    return out
-
-
-def do_stage5(btd, mea_btd, std_btd, bt_mir, mea_mir, std_mir,
-              sza, nwin, ncld, nwat):
-    """Compute the confidence value for each potential fire pixel.
-    Inputs:
-    - indict: The input data dictionary.
-    Returns:
-    - outarr_conf: An array of identical shape to the input satellite imagery containing confidence values.
-    - outarr_frp: An array of identical shape to the input satellite imagery containing estimated FRP values.
-    """
-
-    nig_sza = 60.
-
-    sza_thr = xr.where(sza > nig_sza, nig_sza, sza)
-
-    z4 = (bt_mir - mea_mir) / std_mir
-    zdt = (btd - mea_btd) / std_btd
-
-    min_c1_day = 287
-    min_c1_nig = 280
-    max_c1_day = 327
-    max_c1_nig = 310
-
-    min_c2 = 0.9
-    max_c2 = 6.
-
-    min_c3_day = 2
-    min_c3_nig = 1.5
-    max_c3_day = 6
-    max_c3_nig = 5
-
-    c1_grad = (min_c1_nig - min_c1_day) / nig_sza
-    min_c1 = min_c1_day + c1_grad * sza_thr
-    c1_grad = (max_c1_nig - max_c1_day) / nig_sza
-    max_c1 = max_c1_day + c1_grad * sza_thr
-
-    c3_grad = (min_c3_nig - min_c3_day) / nig_sza
-    min_c3 = min_c3_day + c3_grad * sza_thr
-    c3_grad = (max_c3_nig - max_c3_day) / nig_sza
-    max_c3 = max_c3_day + c3_grad * sza_thr
-
-    c1 = comp_stat(bt_mir, min_c1, max_c1)
-    c2 = comp_stat(z4, min_c2, max_c2)
-    c3 = comp_stat(zdt, min_c3, max_c3)
-
-    c4 = 1 - comp_stat(ncld / (nwin / 2.), 0, 1)
-    c5 = 1 - comp_stat(nwat / (nwin / 2.), 0, 1)
-
-    outarr_conf = np.power(c1 * c2 * c3 * c4 * c5, 1./5.)
-
-    return outarr_conf
 
 
 def make_output_scene(data_dict):
