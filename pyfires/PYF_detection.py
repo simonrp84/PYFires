@@ -245,13 +245,13 @@ def run_dets(data_dict, do_night=False):
                                     lsm_land_val=data_dict['lsm_val'])
 
     outan = da.map_overlap(do_windowed,
-                           data_dict['PFP'],
+                           data_dict['PFP'].data,
                            data_dict['VI1_RAD'],
                            data_dict['LW1__BT'],
                            data_dict['BTD'],
                            data_dict['MIR__BT'],
                            data_dict['VI1_DIFF'],
-                           data_dict['LSM'],
+                           data_dict['LSM'].data,
                            data_dict['LATS'],
                            min_wsize=data_dict['min_wsize'],
                            max_wsize=data_dict['max_wsize'],
@@ -306,7 +306,7 @@ def run_dets(data_dict, do_night=False):
 
     kern = np.ones((data_dict['kern_test_size'], data_dict['kern_test_size']))
 
-    fir_d_sum = convolve(main_det_arr, kern)
+    fir_d_sum = convolve(main_det_arr.data, kern)
     local_max = maximum_filter(data_dict['VI1_DIFF'], (data_dict['kern_test_size'], data_dict['kern_test_size']))
     tmp_out = (fir_d_sum == 1) * (data_dict['VI1_DIFF'] == local_max)
 
@@ -317,7 +317,7 @@ def run_dets(data_dict, do_night=False):
     main_out = main_out * xr.where(data_dict['BTD'] > mean_btd + 2.5, main_out, 0)
     main_out = main_out * xr.where(data_dict['BTD'] > mean_btd + 2 * std_btd, main_out, 0)
 
-    fir_d_sum = convolve(main_out, kern)
+    fir_d_sum = convolve(main_out.data, kern)
     local_max = maximum_filter(data_dict['MIR__BT'],
                                (data_dict['kern_test_size'], data_dict['kern_test_size']))
     tmp_out = (fir_d_sum == 1) * (data_dict['MIR__BT'] == local_max)
@@ -344,13 +344,13 @@ def run_dets(data_dict, do_night=False):
     main_out = main_out * (data_dict['BTD'] > mean_btd + std_mir + std_btd)
 
     kern = np.ones((data_dict['kern_test_size'], data_dict['kern_test_size']))
-    fir_d_sum = convolve(main_out, kern)
+    fir_d_sum = convolve(main_out.data, kern)
     local_max = maximum_filter(data_dict['VI1_DIFF'], (data_dict['kern_test_size'], data_dict['kern_test_size']))
     out5 = (fir_d_sum == 1) * (data_dict['VI1_DIFF'] == local_max)
     main_out = main_out * (fir_d_sum > 1) + out5 * main_out
 
     kern_ones = np.ones((data_dict['kern_test_size'], data_dict['kern_test_size']))
-    fir_d_sum = convolve(main_out, kern_ones)
+    fir_d_sum = convolve(main_out.data, kern_ones)
     local_max = maximum_filter(data_dict['MIR__BT'], (data_dict['kern_test_size'], data_dict['kern_test_size']))
     out5 = (fir_d_sum == 1) * (data_dict['MIR__BT'] == local_max)
     main_out = main_out * (fir_d_sum > 1) + out5 * main_out
@@ -361,7 +361,7 @@ def run_dets(data_dict, do_night=False):
     # Threshold for removing pixels that don't meet the windowed percentage criteria
     main_out_tmp = main_out_tmp * (perc_pfp + perc_good > data_dict['main_perc_thresh']).astype(np.uint8)
 
-    fir_d_sum = convolve(main_out_tmp, kern_ones)
+    fir_d_sum = convolve(main_out_tmp.data, kern_ones)
 
     # Threshold for adding missing fire pixels, as the algorithm removes some pixels adjacent to existing detections
     # We add back using the BTD weighted by the number of fire pixels adjacent to the candidate.
@@ -507,10 +507,10 @@ def run_basic_night_detection(in_vi2_rad,
     if np.nanmax(in_sza > opts['sza_thresh']):
         thr_vis = compute_background_rad(in_vi2_rad, in_sza, sza_thr=opts['sza_thresh'])
     else:
-        return np.zeros_like(in_vi2_rad)
+        return np.zeros_like(in_vi2_rad), np.zeros_like(in_vi2_rad)
 
     if thr_vis == -999:
-        return np.zeros_like(in_vi2_rad)
+        return np.zeros_like(in_vi2_rad), np.zeros_like(in_vi2_rad)
 
     # Compute the definite nighttime detections
     def_dets = (in_vi2_rad > opts['def_fire_rad_vis']).astype(np.uint8)
@@ -527,7 +527,7 @@ def run_basic_night_detection(in_vi2_rad,
     # Sometimes, hot VIS pixels are mistaken as fire. Here we attempt to exclude those pixels
     # by ensuring that the candidate has the highest VID in a 3x3 window.
     # Get sum in 3x3 window
-    det_sum = convolve(out_dets, np.ones((3, 3)))
+    det_sum = convolve(out_dets.data, np.ones((3, 3)))
     # Get max in 3x3 window
     det_max = maximum_filter(in_vid, (3, 3))
 
