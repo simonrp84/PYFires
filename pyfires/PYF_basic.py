@@ -452,12 +452,15 @@ def sort_l1(vi1_raddata,
     data_dict = compute_fire_datasets(data_dict, irrad_dict, bdict, lw1_raddata)
 
     # Lastly, load the land-sea mask
-    if do_load_lsm:
-        data_dict['LSM'] = load_lsm(vi1_raddata)
+    if type(do_load_lsm) is bool:
+        if do_load_lsm:
+            data_dict['LSM'] = load_lsm(vi1_raddata)
+        else:
+            lsm = dask.array.zeros_like(vi1_raddata)
+            lsm[:, :] = PYFc.lsm_land_val
+            data_dict['LSM'] = lsm.astype(np.uint8)
     else:
-        lsm = dask.array.zeros_like(vi1_raddata)
-        lsm[:, :] = PYFc.lsm_land_val
-        data_dict['LSM'] = lsm.astype(np.uint8)
+        data_dict['LSM'] = do_load_lsm
 
     return data_dict
 
