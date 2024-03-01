@@ -25,7 +25,6 @@ from libc.math cimport isnan, cos, M_PI
 cimport numpy as np
 import numpy as np
 import cython
-import dask
 
 
 def get_local_stats(procpix, btd, vid):
@@ -50,16 +49,18 @@ def get_local_stats(procpix, btd, vid):
     return outarr
 
 
-@cython.boundscheck(False)
+@cython.boundscheck(False)  #noqa
 @cython.cdivision(True)
 @cython.wraparound(False)
 @cython.initializedcheck(False)
+@cython.noexcept(True)
+@cython.nogil(True)
 cdef void _get_local_stats(unsigned char[:,:] proc_pix,
                       float [:, :] btd,
                       float [:, :] vid,
                       np.float32_t[:, :, :] outarr,
                       int scn_width,
-                      int scn_height) noexcept nogil:  #noqa
+                      int scn_height):  #noqa
     """Compute the local statistics for the current pixel.
     Inputs:
      - proc_pix: A binary mask indicating which pixels to process (NxM array)
@@ -133,7 +134,9 @@ cdef void _get_local_stats(unsigned char[:,:] proc_pix,
 @cython.cdivision(True)
 @cython.wraparound(False)
 @cython.initializedcheck(False)
-cdef int compare_twofloats(const void *a, const void *b) noexcept nogil: #noqa
+@cython.noexcept(True)
+@cython.nogil(True)
+cdef int compare_twofloats(const void *a, const void *b): #noqa
     cdef int a_val = (<const int *> a)[0]
     cdef int b_val = (<const int *> b)[0]
 

@@ -55,16 +55,15 @@ warnings.filterwarnings('ignore')
 def main():
     with dask.config.set({"array.chunk-size": "20MiB"}):
         # Set the top-level input directory (containing ./HHMM/ subdirs following NOAA AWS format)
-        input_file_dir = 'D:/sat_data/ahi_main/in/'
+        input_file_dir = '/gws/nopw/j04/circulates_vol1/himawari_upd/2023/05/04/'
         # Set the output directory where FRP images will be saved.
-        output_img_dir = 'D:/sat_data/ahi_main/out/'
+        output_img_dir = '/gws/nopw/j04/nerc_avmet/him_frp_out/'
 
         # Set an X-Y bounding box for cropping the input data.
-        #bbox = (-1600000, -2770000, 690000, -1040000)
         bbox = None
 
         # Search for input timeslots.
-        idirs = glob(f'{input_file_dir}/*1110*')
+        idirs = glob(f'{input_file_dir}/*')
         idirs.sort()
 
         # Set up a dictionary mapping band type names to the AHI channel names.
@@ -99,11 +98,10 @@ def main():
             dtstr = curf[pos+7:pos+7+13]
 
             # Set output filename
-            outf = f'{output_img_dir}/fires_{dtstr}00.tif'
+            outf = f'{output_img_dir}/fires_{dtstr}00.csv'
 
             # Skip files we've already processed
-            #if not os.path.isfile(outf1) and not os.path.isfile(outf2):
-            if True:
+            if not(os.path.exists(outf)):
                 # Load the initial data.
                 # Here we don't load the land/sea mask as we're cropping and this is
                 # not (yet) supported by pyfires. For full disk processing you will
@@ -120,15 +118,16 @@ def main():
                 # Run the detection algorithm. This returns a boolean mask of the
                 # fire detections as well as the actual fire radiative power data.
                 data_dict = run_dets(data_dict)
-                save_output(scn, data_dict['frp_est'], 'frp_est', outf, ref='B07')
-                #save_output_csv(data_dict, outf)
+                # save_output(scn, data_dict['frp_est'], 'frp_est', outf, ref='B07')
+                save_output_csv(data_dict, outf)
 
             en = datetime.utcnow()
 
             print((en-st).total_seconds())
+            break
 
 
 if __name__ == "__main__":
-    with Profiler() as prof, ResourceProfiler(dt=0.25) as rprof:
-        main()
-    visualize([prof, rprof], show=False, save=True, filename="D:/sat_data/ahi_main/frp_vis.html")
+    #with Profiler() as prof, ResourceProfiler(dt=0.25) as rprof:
+    main()
+    #visualize([prof, rprof], show=False, save=True, filename="D:/sat_data/ahi_main/frp_vis.html")
