@@ -19,5 +19,5 @@
 
 """Initialisation for the pyfires package."""
 
-from PYF_basic import initial_load, sort_l1
-from PYF_detection import run_dets
+from .PYF_basic import initial_load, sort_l1
+from .PYF_detection import run_dets

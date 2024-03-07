@@ -30,7 +30,7 @@ dask.config.set(num_workers=20)
 # But we do not cache the sensor angles, and for Himawari these do change!
 # For processing other satellites you may want to cache the angles.
 import satpy
-satpy.config.set({'cache_dir': "D:/sat_data/cache/"})
+satpy.config.set({'cache_dir': "/home/users/srproud/sat_data/cache/"})
 satpy.config.set({'cache_sensor_angles': False})
 satpy.config.set({'cache_lonlats': True})
 
@@ -55,7 +55,7 @@ warnings.filterwarnings('ignore')
 def main():
     with dask.config.set({"array.chunk-size": "20MiB"}):
         # Set the top-level input directory (containing ./HHMM/ subdirs following NOAA AWS format)
-        input_file_dir = '/gws/nopw/j04/circulates_vol1/himawari_upd/2023/05/04/'
+        input_file_dir = '/gws/nopw/j04/circulates_vol1/himawari_upd/'
         # Set the output directory where FRP images will be saved.
         output_img_dir = '/gws/nopw/j04/nerc_avmet/him_frp_out/'
 
@@ -63,7 +63,7 @@ def main():
         bbox = None
 
         # Search for input timeslots.
-        idirs = glob(f'{input_file_dir}/*')
+        idirs = glob(f'{input_file_dir}/2022/12/*/*')
         idirs.sort()
 
         # Set up a dictionary mapping band type names to the AHI channel names.
@@ -124,8 +124,6 @@ def main():
             en = datetime.utcnow()
 
             print((en-st).total_seconds())
-            break
-
 
 if __name__ == "__main__":
     #with Profiler() as prof, ResourceProfiler(dt=0.25) as rprof:
