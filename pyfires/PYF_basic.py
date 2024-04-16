@@ -459,8 +459,13 @@ def sort_l1(vi1_raddata,
             lsm = dask.array.zeros_like(vi1_raddata)
             lsm[:, :] = PYFc.lsm_land_val
             data_dict['LSM'] = lsm.astype(np.uint8)
-    else:
+    elif type(do_load_lsm) is dask.array.Array:
         data_dict['LSM'] = do_load_lsm
+    elif type(do_load_lsm) is xr.DataArray:
+        data_dict['LSM'] = do_load_lsm.data
+    else:
+        print(type(data_dict['LSM']))
+        raise ValueError
 
     return data_dict
 

@@ -23,14 +23,14 @@
 # actually slow down processing, so here we limit the cores it can use.
 # For more info, see: https://satpy.readthedocs.io/en/stable/faq.html#why-is-satpy-slow-on-my-powerful-machine
 import dask
-dask.config.set(num_workers=20)
+dask.config.set(num_workers=2)
 
 # Set some satpy configuration options for data caching.
 # We cache the lats / lons as they should not change when processing a time series.
 # But we do not cache the sensor angles, and for Himawari these do change!
 # For processing other satellites you may want to cache the angles.
 import satpy
-satpy.config.set({'cache_dir': "/home/users/srproud/sat_data/cache/"})
+satpy.config.set({'cache_dir': "/home/ubuntu/data/cache/"})
 satpy.config.set({'cache_sensor_angles': False})
 satpy.config.set({'cache_lonlats': True})
 
@@ -53,17 +53,17 @@ warnings.filterwarnings('ignore')
 
 
 def main():
-    with dask.config.set({"array.chunk-size": "20MiB"}):
+    with dask.config.set({"array.chunk-size": "10MiB"}):
         # Set the top-level input directory (containing ./HHMM/ subdirs following NOAA AWS format)
-        input_file_dir = '/gws/nopw/j04/circulates_vol1/himawari_upd/'
+        input_file_dir = '/home/ubuntu/data/him/'
         # Set the output directory where FRP images will be saved.
-        output_img_dir = '/gws/nopw/j04/nerc_avmet/him_frp_out/'
+        output_img_dir = '/home/ubuntu/data/out/'
 
         # Set an X-Y bounding box for cropping the input data.
         bbox = None
 
         # Search for input timeslots.
-        idirs = glob(f'{input_file_dir}/2022/12/*/*')
+        idirs = glob(f'{input_file_dir}/*')
         idirs.sort()
 
         # Set up a dictionary mapping band type names to the AHI channel names.
@@ -128,4 +128,4 @@ def main():
 if __name__ == "__main__":
     #with Profiler() as prof, ResourceProfiler(dt=0.25) as rprof:
     main()
-    #visualize([prof, rprof], show=False, save=True, filename="D:/sat_data/ahi_main/frp_vis.html")
+    #    visualize([prof, rprof], show=False, save=True, filename="/home/ubuntu/data/frp_vis.html")
